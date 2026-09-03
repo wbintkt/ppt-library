@@ -1,0 +1,23 @@
+# Python
+backend/venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# 环境变量与密钥（勿提交）
+backend/.env
+.env
+*.local
+
+# 系统/编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 运行时数据（实际数据目录在仓库外：/data/ppt-library）
+*.log

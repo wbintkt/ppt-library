@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pgvector
+celery
+redis
+python-multipart
+python-pptx
+pydantic
+pydantic-settings
+python-jose[cryptography]
+passlib[bcrypt]
+dashscope

@@ -1,0 +1,89 @@
+# PPT 素材智能检索系统 — Docker Compose 部署（备选方案）
+#
+# 当前服务器（1.8G 内存）使用原生 systemd 部署（见 README.md），效果等同且更省内存。
+# 如需迁移到 Docker Compose（架构文档第十一节），本文件为完整配置。
+#
+# 使用：
+#   1. cp .env.example .env 并填写 DASHSCOPE_API_KEY
+#   2. docker compose up -d --build
+#   3. 访问 http://<server>:8080/ppt/  （Nginx 入口，已含前端 + API 反代）
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg14
+    environment:
+      POSTGRES_USER: ppt_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_DB_PASS}
+      POSTGRES_DB: ppt_library
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ppt_user -d ppt_library"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://ppt_user:${POSTGRES_PASSWORD:-CHANGE_ME_DB_PASS}@postgres:5432/ppt_library
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BACKEND_URL: redis://redis:6379/1
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-PptLib2026}
+      SECRET_KEY: ${SECRET_KEY:-change-me-please}
+      DATA_DIR: /data/ppt-library
+    volumes:
+      - pptdata:/data/ppt-library
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1 -n pptworker@%h
+    environment:
+      DATABASE_URL: postgresql+psycopg2://ppt_user:${POSTGRES_PASSWORD:-CHANGE_ME_DB_PASS}@postgres:5432/ppt_library
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BACKEND_URL: redis://redis:6379/1
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DATA_DIR: /data/ppt-library
+    volumes:
+      - pptdata:/data/ppt-library
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
+  pptdata:
