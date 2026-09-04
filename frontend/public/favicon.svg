@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- PPT 素材智能检索系统 · favicon 铁塔红（默认主题） -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f5222c"/>
+      <stop offset="1" stop-color="#b8000d"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <!-- 白色页面：PPT 素材以「页」为单位 -->
+  <rect x="13.5" y="10" width="37" height="44" rx="5" fill="#faf9f7"/>
+  <!-- 品牌 ◆（铁塔红） -->
+  <path d="M32 17.5 L44 32 L32 46.5 L20 32 Z" fill="#c0000e"/>
+</svg>

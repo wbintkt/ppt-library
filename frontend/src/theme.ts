@@ -41,6 +41,9 @@ export function applyTheme(id: ThemeId) {
   } else {
     document.documentElement.removeAttribute('data-theme')
   }
+  // favicon 随主题切换（绿色版同构换色）
+  const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"][type="image/svg+xml"]')
+  if (icon) icon.setAttribute('href', id === 'green' ? 'favicon-green.svg' : 'favicon.svg')
 }
 
 /** 当前主题（响应式，供界面绑定） */
