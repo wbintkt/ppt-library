@@ -51,7 +51,7 @@ async function doLogin() {
   min-height: calc(100vh - 60px);
   display: flex; align-items: center; justify-content: center;
   background:
-    radial-gradient(ellipse at 50% 20%, rgba(230, 0, 18, 0.08), transparent 60%),
+    radial-gradient(ellipse at 50% 20%, var(--login-glow), transparent 60%),
     var(--bg);
 }
 .login-card {

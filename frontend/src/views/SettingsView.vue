@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { api, type SettingsInfo } from '../api'
 import { toast } from '../toast'
+import { THEMES, currentTheme, setTheme, type ThemeId } from '../theme'
 
 const info = ref<SettingsInfo | null>(null)
 const apiKey = ref('')
@@ -29,6 +30,11 @@ async function save() {
   }
 }
 
+function pickTheme(id: ThemeId) {
+  setTheme(id)
+  toast(`已切换为「${THEMES.find((t) => t.id === id)?.name}」主题`)
+}
+
 onMounted(load)
 </script>
 
@@ -36,8 +42,37 @@ onMounted(load)
   <div class="settings-view" v-if="info">
     <h2 class="set-title fade-up">系统设置</h2>
 
-    <!-- 语义检索配置 -->
+    <!-- 界面主题 -->
     <section class="card set-card fade-up fade-up-1">
+      <div class="set-head">
+        <h3>界面主题</h3>
+        <span class="badge ready">◆ 即时生效</span>
+      </div>
+      <p class="set-desc">
+        切换整套配色风格（含登录页）。选择后立即生效，并记住在当前浏览器。
+      </p>
+      <div class="theme-grid">
+        <button
+          v-for="t in THEMES"
+          :key="t.id"
+          class="theme-opt"
+          :class="{ active: currentTheme === t.id }"
+          @click="pickTheme(t.id)"
+        >
+          <span class="theme-swatches">
+            <i v-for="(c, i) in t.swatches" :key="i" :style="{ background: c }"></i>
+          </span>
+          <span class="theme-meta">
+            <span class="theme-name">{{ t.name }}</span>
+            <span class="theme-desc">{{ t.desc }}</span>
+          </span>
+          <span v-if="currentTheme === t.id" class="theme-check">✓</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 语义检索配置 -->
+    <section class="card set-card fade-up fade-up-2">
       <div class="set-head">
         <h3>语义检索引擎</h3>
         <span class="badge" :class="info.vector_mode ? 'ready' : 'ready_limited'">
@@ -61,7 +96,7 @@ onMounted(load)
     </section>
 
     <!-- 系统状态 -->
-    <section class="card set-card fade-up fade-up-2">
+    <section class="card set-card fade-up fade-up-3">
       <div class="set-head"><h3>素材库状态</h3></div>
       <div class="stat-grid">
         <div class="stat"><span class="stat-num">{{ info.total_files }}</span><span class="stat-label">PPT 文件</span></div>
@@ -70,7 +105,7 @@ onMounted(load)
       </div>
     </section>
 
-    <section class="card set-card fade-up fade-up-3">
+    <section class="card set-card fade-up">
       <div class="set-head"><h3>使用说明</h3></div>
       <ul class="guide">
         <li>◆ 上传 PPT 后系统自动按页解析，生成页面图片与文本，无需人工处理</li>
@@ -99,4 +134,27 @@ onMounted(load)
 .guide { list-style: none; }
 .guide li { font-size: 13.5px; color: var(--ink-soft); padding: 7px 0; border-bottom: 1px dashed var(--brand-line); }
 .guide li:last-child { border-bottom: none; }
+
+.theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.theme-opt {
+  display: flex; align-items: center; gap: 14px; text-align: left;
+  padding: 16px 18px; border-radius: 12px; cursor: pointer;
+  border: 1px solid var(--brand-line); background: var(--white);
+  font-family: var(--sans); transition: all 0.2s ease;
+}
+.theme-opt:hover { border-color: var(--brand); box-shadow: var(--shadow-hover); }
+.theme-opt.active { border-color: var(--brand); box-shadow: 0 0 0 1.5px var(--brand); }
+.theme-swatches {
+  display: flex; flex-direction: column; gap: 5px; padding: 7px;
+  border-radius: 8px; background: var(--bg-deep); flex-shrink: 0;
+}
+.theme-swatches i { display: block; width: 88px; height: 7px; border-radius: 4px; }
+.theme-meta { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.theme-name { font-family: var(--serif); font-size: 14.5px; font-weight: 700; color: var(--ink); }
+.theme-desc { font-size: 12px; color: var(--ink-faint); line-height: 1.6; }
+.theme-check {
+  width: 22px; height: 22px; border-radius: 50%; background: var(--brand); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0;
+}
+@media (max-width: 720px) { .theme-grid { grid-template-columns: 1fr; } }
 </style>

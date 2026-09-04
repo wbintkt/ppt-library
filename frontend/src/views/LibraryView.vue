@@ -190,7 +190,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
   width: 52px; height: 52px; border-radius: 12px; flex-shrink: 0;
   background: linear-gradient(135deg, var(--brand), var(--brand-deep)); color: #fff;
   display: flex; align-items: center; justify-content: center; font-size: 20px;
-  box-shadow: 0 4px 14px rgba(230, 0, 18, 0.25);
+  box-shadow: 0 4px 14px var(--glow);
 }
 .file-info { flex: 1; min-width: 0; width: 100%; }
 .file-top { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }

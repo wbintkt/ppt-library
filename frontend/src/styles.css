@@ -1,4 +1,5 @@
-/* PPT 素材智能检索系统 —— 日式和风 v3（铁塔红主色） */
+/* PPT 素材智能检索系统 —— 日式和风 v3（铁塔红主色）
+   主题体系：默认 :root = 铁塔红·和风；html[data-theme='green'] = 青绿·M3 Expressive */
 :root {
   --bg: #faf9f7;
   --bg-deep: #f3f0ea;
@@ -24,6 +25,43 @@
   --gold: #e60012;
   --gold-deep: #c0000e;
   --gold-line: #f0c9cc;
+  /* 场景色（硬编码收编，随主题切换） */
+  --glass: rgba(250, 249, 247, 0.92);          /* 顶栏毛玻璃 */
+  --glass-strong: rgba(250, 249, 247, 0.96);   /* 悬浮操作条 */
+  --glow: rgba(230, 0, 18, 0.25);              /* 文件图标光晕 */
+  --tint-a: rgba(230, 0, 18, 0.05);             /* 页面氛围渐变 */
+  --tint-b: rgba(230, 0, 18, 0.04);
+  --login-glow: rgba(230, 0, 18, 0.08);         /* 登录页氛围 */
+  --drop-bg: #fdfaf5;                            /* 上传拖拽区 */
+  --drop-hover: #f7efe2;
+}
+
+/* ===== 青绿主题：灵感来自 Material 3 Expressive Green 预设 =====
+   主色 #2E6A45 / 主容器 #B0F1C2 / 表面 #F6FBF4（容器阶梯 #F0F5EE→#DEE4DC） */
+:root[data-theme='green'] {
+  --bg: #f6fbf4;
+  --bg-deep: #f0f5ee;
+  --ink: #1a241e;
+  --ink-soft: #5c6b61;
+  --ink-faint: #8c9b90;
+  --brand: #2e6a45;
+  --brand-deep: #1f5234;
+  --brand-soft: #e3f2e7;
+  --brand-line: #d5e5da;
+  --white: #ffffff;
+  --danger: #b3543f;
+  --ok: #2e6a45;
+  --gold: #2e6a45;
+  --gold-deep: #1f5234;
+  --gold-line: #d5e5da;
+  --glass: rgba(246, 251, 244, 0.92);
+  --glass-strong: rgba(246, 251, 244, 0.96);
+  --glow: rgba(46, 106, 69, 0.30);
+  --tint-a: rgba(46, 106, 69, 0.06);
+  --tint-b: rgba(46, 106, 69, 0.05);
+  --login-glow: rgba(46, 106, 69, 0.10);
+  --drop-bg: #f1f8f2;
+  --drop-hover: #e5f2e9;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -39,8 +77,8 @@ body {
   -webkit-font-smoothing: antialiased;
   /* 和纸纹理：极淡噪点，避免纯白死板 */
   background-image:
-    radial-gradient(ellipse at 20% 0%, rgba(230, 0, 18, 0.05), transparent 55%),
-    radial-gradient(ellipse at 85% 15%, rgba(230, 0, 18, 0.04), transparent 50%);
+    radial-gradient(ellipse at 20% 0%, var(--tint-a), transparent 55%),
+    radial-gradient(ellipse at 85% 15%, var(--tint-b), transparent 50%);
   background-attachment: fixed;
 }
 
@@ -52,7 +90,7 @@ body {
 .topbar {
   display: flex; align-items: center; gap: 28px;
   padding: 14px 48px;
-  background: rgba(250, 249, 247, 0.92);
+  background: var(--glass);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--brand-line);
   position: sticky; top: 0; z-index: 50;

@@ -99,10 +99,10 @@ async function doUpload() {
 .upload-modal { max-width: 560px; }
 .dropzone {
   border: 1.5px dashed var(--brand); border-radius: 12px; padding: 34px 20px;
-  text-align: center; cursor: pointer; transition: all 0.25s; background: #fdfaf5;
+  text-align: center; cursor: pointer; transition: all 0.25s; background: var(--drop-bg);
   margin-bottom: 20px;
 }
-.dropzone:hover, .dropzone.dragging { background: #f7efe2; border-color: var(--brand-deep); }
+.dropzone:hover, .dropzone.dragging { background: var(--drop-hover); border-color: var(--brand-deep); }
 .dz-icon { color: var(--brand); font-size: 22px; display: block; margin-bottom: 10px; }
 .dz-main { font-size: 14.5px; font-family: var(--serif); color: var(--ink); }
 .dz-sub { font-size: 12px; color: var(--ink-faint); margin-top: 6px; }

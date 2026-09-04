@@ -262,7 +262,7 @@ function fmtScore(s: number | null | undefined) {
 .select-bar {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
   display: flex; align-items: center; gap: 14px;
-  background: rgba(250, 249, 247, 0.96); backdrop-filter: blur(6px);
+  background: var(--glass-strong); backdrop-filter: blur(6px);
   border: 1px solid var(--brand-line); border-radius: 999px;
   padding: 10px 12px 10px 22px; box-shadow: 0 8px 30px rgba(45, 42, 38, 0.18);
   z-index: 50;
