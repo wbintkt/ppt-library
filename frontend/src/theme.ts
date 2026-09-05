@@ -13,9 +13,9 @@ export interface ThemeOption {
 export const THEMES: ThemeOption[] = [
   {
     id: 'tower',
-    name: '铁塔红 · 和风',
-    desc: '日式和风原版，中国铁塔品牌红主色',
-    swatches: ['#faf9f7', '#e60012', '#f7e6e7', '#f0c9cc'],
+    name: '朱红 · 留白',
+    desc: '暖白、墨黑与朱红，克制而清晰的日式风格',
+    swatches: ['#fcfbf9', '#c6372d', '#fcf3f0', '#e5e1dc'],
   },
   {
     id: 'green',

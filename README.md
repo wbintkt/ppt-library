@@ -95,3 +95,20 @@ Key 保存在数据库 app_settings 表，运行时可改，立即生效。
 - PostgreSQL 14 + pgvector 0.8.6（PGDG 源，路径 /usr/pgsql-14）
 - Redis 6.2
 - 内存仅 1.8G：Celery worker 并发 1，worker_max_tasks_per_child=10 防泄漏
+
+## 前端开发与发布
+
+前端现采用「朱红 · 留白」内容搜索界面：首页只展示搜索入口，结果页显示页面标题、页码和后端提供的匹配度，不显示分类和来源。支持大图/紧凑视图、取消搜索、失败重试、跨查询选页、调整导出顺序及键盘预览。已选页面保存在当前标签页会话，退出或登录失效会清空；搜索结果仅在内存中缓存，查询词随页面 URL 保存。
+
+```bash
+cd frontend
+npm ci
+npm run dev
+npm run check
+```
+
+`npm run check` 包括 Vue/TypeScript 检查、交互测试和生产构建。测试使用模拟 API，不调用线上模型或修改素材。
+
+构建结果现在输出至 `frontend/dist/`，不再直接清空服务器网站目录。正式发布时，应先备份 `/var/www/wbintkt-home/ppt/index.html`，将 `dist/assets/` 与图标文件复制到网站目录，最后更新 `index.html`。保留旧版本带哈希的 assets，避免已打开的页面加载失败；回滚时恢复备份的 `index.html`。也可以通过 Vite 的 `--outDir` 参数显式指定其他构建目录。
+
+本次前端改造不改变搜索排序、分数校准或导出后端。匹配度来自 `display_score`，缺失时显示「—」，不是经标注验证的准确率。上线后仍需使用真实素材检查搜索、预览、单页与多页导出。

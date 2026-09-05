@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [vue()],
   base: '/ppt/',
   build: {
-    outDir: '/var/www/wbintkt-home/ppt',
+    outDir: 'dist',
     emptyOutDir: true,
     chunkSizeWarningLimit: 1024,
   },

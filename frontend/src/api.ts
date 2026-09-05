@@ -1,3 +1,4 @@
+import { resetSearchState } from './searchState'
 // API 封装（带 token 管理）
 const BASE = '/ppt/api'
 
@@ -33,6 +34,7 @@ export function setToken(t: string) {
 
 export function clearToken() {
   localStorage.removeItem('ppt_token')
+  resetSearchState()
 }
 
 export function isAuthed(): boolean {
@@ -110,11 +112,12 @@ export const api = {
     const qs = new URLSearchParams(params as Record<string, string>).toString()
     return request<{ total: number; items: PageSummary[] }>(`/pages?${qs}`)
   },
-  search: (query: string, category: string = '', topK: number = 20) =>
+  search: (query: string, category: string = '', topK: number = 20, signal?: AbortSignal) =>
     request<SearchResp>('/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, category, top_k: topK }),
+      signal,
     }),
   pageImageUrl: (pageId: number) => `${BASE}/pages/${pageId}/image?token=${getToken()}`,
   exportPages: async (pageIds: number[]): Promise<Blob> => {

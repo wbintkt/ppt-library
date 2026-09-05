@@ -3,7 +3,7 @@ import { toastState } from './toast'
 </script>
 
 <template>
-  <div class="toast" :class="{ error: toastState.type === 'error' }" v-if="toastState.visible">
+  <div role="status" aria-live="polite" class="toast" :class="{ error: toastState.type === 'error' }" v-if="toastState.visible">
     {{ toastState.msg }}
   </div>
 </template>

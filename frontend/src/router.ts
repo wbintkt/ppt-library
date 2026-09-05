@@ -3,6 +3,7 @@ import { isAuthed } from './api'
 
 const router = createRouter({
   history: createWebHashHistory(),
+  scrollBehavior(_to, _from, savedPosition) { return savedPosition || { top: 0 } },
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue') },
     { path: '/', name: 'search', component: () => import('./views/SearchView.vue') },

@@ -75,8 +75,8 @@ onMounted(load)
     <section class="card set-card fade-up fade-up-2">
       <div class="set-head">
         <h3>语义检索引擎</h3>
-        <span class="badge" :class="info.vector_mode ? 'ready' : 'ready_limited'">
-          {{ info.vector_mode ? '◆ 语义检索已启用' : '◇ 关键词检索模式' }}
+        <span class="badge" :class="info.has_api_key ? 'ready' : 'ready_limited'">
+          {{ info.has_api_key ? '◆ 语义检索已启用' : '◇ 关键词检索模式' }}
         </span>
       </div>
       <p class="set-desc">

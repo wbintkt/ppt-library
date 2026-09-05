@@ -1,40 +1,34 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
+import { computed } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { clearToken } from './api'
 import ToastHost from './ToastHost.vue'
-
 const router = useRouter()
-const nav = [
-  { name: 'search', label: '语义检索', icon: '◇' },
-  { name: 'library', label: '素材库', icon: '◆' },
-  { name: 'settings', label: '系统设置', icon: '◇' },
-]
-
+const route = useRoute()
+const isSearch = computed(() => route.name === 'search')
+function focusMain() { document.getElementById('main-content')?.focus() }
 function logout() {
   clearToken()
   router.push('/login')
 }
 </script>
-
 <template>
-  <div class="layout">
+  <div class="layout" :class="{ 'search-layout': isSearch, 'login-layout': route.name === 'login' }">
+    <a href="#main-content" class="skip-link" @click.prevent="focusMain">跳到主要内容</a>
     <ToastHost />
     <header class="topbar">
-      <div class="brand" @click="router.push('/')">
-        <span class="brand-mark">◆</span>
-        <span class="brand-name">PPT 素材库</span>
-        <span class="brand-sub">智能检索系统</span>
-      </div>
-      <nav class="nav">
-        <router-link v-for="n in nav" :key="n.name" :to="{ name: n.name }" class="nav-link">
-          <span class="nav-icon">{{ n.icon }}</span>{{ n.label }}
-        </router-link>
+      <router-link class="brand" to="/" aria-label="PPT 素材库首页">
+        <span class="brand-mark" aria-hidden="true"></span><span class="brand-name">PPT 素材库</span>
+      </router-link>
+      <div id="header-search"></div>
+      <nav v-if="route.name !== 'login'" class="nav" aria-label="主导航">
+        <router-link v-if="!isSearch" to="/" class="nav-link">搜索</router-link>
+        <router-link to="/library" class="nav-link">素材管理</router-link>
+        <router-link to="/settings" class="nav-link">设置</router-link>
+        <button class="logout-btn" @click="logout">退出</button>
       </nav>
-      <button class="logout-btn" @click="logout">退出</button>
     </header>
-    <main class="content">
-      <router-view />
-    </main>
-    <footer class="footer">◆ 以「页」为单位的跨模态 PPT 素材检索</footer>
+    <main id="main-content" class="content" tabindex="-1"><router-view /></main>
+    <footer class="footer">PPT 素材库 <span aria-hidden="true">·</span> 内容有迹可循</footer>
   </div>
 </template>
