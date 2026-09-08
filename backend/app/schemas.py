@@ -69,7 +69,9 @@ class SearchResultItem(BaseModel):
     text: str
     tags: str
     score: float
-    display_score: float | None = None  # 纯向量相似度（0-1），供前端展示；None 表示不展示
+    display_score: float | None = None  # 相关性分（0-1），不是经标注校准的准确率
+    rerank_reason: str | None = None
+    rerank_evidence: str | None = None
     embedding_status: str
     category: str
 
@@ -78,6 +80,7 @@ class SearchResponse(BaseModel):
     query: str
     total: int
     items: List[SearchResultItem]
+    rerank_status: str = "unavailable"
 
 
 class TaskStatusResponse(BaseModel):

@@ -1,6 +1,6 @@
 """语义检索路由（核心）
 
-流程：query → qwen3-vl-embedding → pgvector cosine → Top K → 元数据过滤
+流程：query → 向量/关键词召回（含元数据过滤）→ 完整意图重排 → Top K
 降级：无 API Key 或向量检索异常时，自动回退 PostgreSQL 全文检索。
 """
 import logging
@@ -25,6 +25,7 @@ from ..config import settings
 from ..database import get_db
 from ..schemas import SearchResponse, SearchResultItem
 from ..services import embedder
+from ..services.intent_reranker import rerank
 from ..services.query_analyzer import analyze_query, analyze_query_full
 
 logger = logging.getLogger("ppt.search")
@@ -233,6 +234,7 @@ def _fulltext_search(db: Session, query: str, category: str, file_id: int, limit
     """降级/兜底：多关键词 ILIKE 匹配（对中文友好）+ 词频打分"""
     words = _split_words(query)
     where = []
+    filters = []
     score_parts = []
     params = {"limit": limit}
     for i, w in enumerate(words):
@@ -241,19 +243,20 @@ def _fulltext_search(db: Session, query: str, category: str, file_id: int, limit
         where.append(f"(p.title ILIKE :{p} OR p.text ILIKE :{p} OR p.tags ILIKE :{p})")
         score_parts.append(f"CASE WHEN p.title ILIKE :{p} THEN 3.0 ELSE 0 END + CASE WHEN p.text ILIKE :{p} THEN 1.0 ELSE 0 END")
     if category:
-        where.append("f.category = :category")
+        filters.append("f.category = :category")
         params["category"] = category
     if file_id:
-        where.append("p.file_id = :file_id")
+        filters.append("p.file_id = :file_id")
         params["file_id"] = file_id
     score_sql = " + ".join(score_parts)
+    where_sql = " AND ".join([f"({' OR '.join(where)})", *filters])
     sql = f"""
         SELECT p.id AS page_id, p.file_id, p.page_no, p.title, p.text, p.tags,
                f.name AS file_name, f.category,
                ({score_sql}) AS score
         FROM ppt_pages p
         JOIN ppt_files f ON f.id = p.file_id
-        WHERE ({' OR '.join(where)})
+        WHERE {where_sql}
         ORDER BY score DESC, p.page_no
         LIMIT :limit
     """
@@ -293,6 +296,17 @@ def _normalize_display_scores(items: list[dict]) -> None:
         r["display_score"] = _score_to_display(s)
 
 
+def _rerank_candidates(vector_items: list[dict], hybrid_items: list[dict], limit: int) -> list[dict]:
+    """向量序与关键词序交替取候选，防止标题加分提前挤掉业务相关页。"""
+    chosen = {}
+    for vector, hybrid in zip(vector_items, hybrid_items):
+        for item in (vector, hybrid):
+            chosen.setdefault(item["page_id"], item)
+            if len(chosen) == limit:
+                return list(chosen.values())
+    return list(chosen.values())
+
+
 @router.post("", response_model=SearchResponse)
 def search(
     body: dict,
@@ -304,11 +318,14 @@ def search(
         raise HTTPException(status_code=400, detail="查询内容不能为空")
     category = (body.get("category") or "").strip()
     file_id = int(body.get("file_id") or 0)
-    limit = min(int(body.get("top_k") or settings.search_top_k), 50)
+    limit = max(1, min(int(body.get("top_k") or settings.search_top_k), 50))
 
     items = []
     mode = "vector"
-    if embedder.has_api_key():
+    has_key = embedder.has_api_key()
+    candidate_limit = settings.rerank_candidate_limit
+    fulltext_limit = candidate_limit if has_key and settings.rerank_enabled else limit
+    if has_key:
         try:
             # 完整查询理解：正向关键词 + 排除词
             weights, exclude = analyze_query_full(query)
@@ -316,27 +333,30 @@ def search(
             positive_q = _strip_negative_clause(query)
             qvec = embedder.embed_query(positive_q)
             # 取更大的候选集（关键词加成可能让后位页面上升）
-            items = _vector_search(db, qvec, category, file_id, "", max(limit * 3, 60))
-            items = _hybrid_sort(items, query, top_k=max(limit * 2, 30), weights=weights)
-            # 排除词降权：命中排除概念的页面沉底（不硬删，避免误伤边缘相关页）
-            _apply_exclude_penalty(items, exclude)
-            items = sorted(items, key=lambda r: r["score"], reverse=True)[:limit]
+            vector_items = _vector_search(db, qvec, category, file_id, "", max(limit * 3, candidate_limit))
+            hybrid_items = _hybrid_sort(vector_items, query, top_k=len(vector_items), weights=weights)
+            fallback_items = hybrid_items[:max(limit * 2, 30)]
+            items = _rerank_candidates(vector_items, hybrid_items, candidate_limit)
         except embedder.EmbeddingError as e:
             logger.warning("vector search failed, fallback to fulltext: %s", e)
             mode = "fulltext"
-            items = _fulltext_search(db, query, category, file_id, limit)
+            items = _fulltext_search(db, query, category, file_id, fulltext_limit)
+            fallback_items = items[:limit]
             _, exclude = analyze_query_full(query)
-            _apply_exclude_penalty(items, exclude)
-            items = sorted(items, key=lambda r: r["score"], reverse=True)[:limit]
     else:
         mode = "fulltext"
         items = _fulltext_search(db, query, category, file_id, limit)
+        fallback_items = items[:limit]
         _, exclude = analyze_query_full(query)
-        _apply_exclude_penalty(items, exclude)
-        items = sorted(items, key=lambda r: r["score"], reverse=True)[:limit]
 
-    # 显示分归一化：第一名 100%，其余按混合分相对比例（与排序感知一致）
-    _normalize_display_scores(items)
+    # 必须使用原始完整问题；重排成功后不叠加关键词/排除词分，避免再次丢失业务关系。
+    items, rerank_status = rerank(query, items)
+    if rerank_status == "applied":
+        items = items[:limit]
+    else:
+        _apply_exclude_penalty(fallback_items, exclude)
+        items = sorted(fallback_items, key=lambda r: r["score"], reverse=True)[:limit]
+        _normalize_display_scores(items)
 
     results = [
         SearchResultItem(
@@ -344,9 +364,11 @@ def search(
             page_no=r["page_no"], title=r["title"] or f"第{r['page_no']}页",
             text=r["text"] or "", tags=r["tags"] or "", score=round(float(r["score"]), 4),
             display_score=r.get("display_score"),
+            rerank_reason=r.get("rerank_reason"),
+            rerank_evidence=r.get("rerank_evidence"),
             embedding_status="done" if mode == "vector" else "n/a",
             category=r["category"] or "",
         )
         for r in items
     ]
-    return SearchResponse(query=query, total=len(results), items=results)
+    return SearchResponse(query=query, total=len(results), items=results, rerank_status=rerank_status)

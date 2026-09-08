@@ -2,6 +2,7 @@
 import secrets
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -26,6 +27,11 @@ class Settings(BaseSettings):
     max_upload_mb: int = 200
     # 检索
     search_top_k: int = 20
+    rerank_enabled: bool = True
+    rerank_model: str = "qwen-flash"
+    rerank_candidate_limit: int = Field(default=60, ge=50, le=100)
+    rerank_text_chars: int = Field(default=1800, ge=500, le=4000)
+    rerank_timeout_seconds: float = Field(default=30, ge=1, le=60)
 
     class Config:
         env_file = ".env"

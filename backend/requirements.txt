@@ -12,3 +12,4 @@ pydantic-settings
 python-jose[cryptography]
 passlib[bcrypt]
 dashscope
+jieba
