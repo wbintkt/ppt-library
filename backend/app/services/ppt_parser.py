@@ -96,6 +96,33 @@ def guess_title(text: str) -> str:
     return text.split("\n")[0].strip()[:60]
 
 
+def extract_native_texts(src_path: str) -> list[str]:
+    """按完整文本框提取 PPTX 文本，避免 PDF 多栏逐行交叉；与 PDF 一样跳过隐藏页。"""
+    if Path(src_path).suffix.lower() != ".pptx":
+        return []
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    def paragraphs(shapes):
+        result = []
+        for shape in sorted(shapes, key=lambda s: (s.top, s.left)):
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                result.extend(paragraphs(shape.shapes))
+            elif shape.has_text_frame:
+                result.extend(p.text for p in shape.text_frame.paragraphs if p.text.strip())
+            elif shape.has_table:
+                result.extend(" | ".join(c.text for c in row.cells) for row in shape.table.rows)
+        return result
+
+    try:
+        presentation = Presentation(src_path)
+        return ["\n".join(paragraphs(slide.shapes)) for slide in presentation.slides
+                if slide._element.get("show") != "0"]
+    except Exception:
+        # 老格式、损坏文件或不支持的结构仍走 PDF 提取。
+        return []
+
+
 def parse_ppt(src_path: str, work_dir: str) -> dict:
     """完整解析一个 PPT：
     返回 { page_count, pages: [{page_no, png_path, text, title}] }
@@ -114,9 +141,15 @@ def parse_ppt(src_path: str, work_dir: str) -> dict:
 
     # 3. 提取每页文本 + 标题
     pages = []
+    native_texts = extract_native_texts(src_path)
     for no in range(1, page_count + 1):
         text = extract_page_text(pdf_path, no)
         title = guess_title(text)
+        if len(native_texts) == page_count:
+            native = native_texts[no - 1]
+            # 图表等未被文本框覆盖时保留 PDF 文本，不以不完整内容替换。
+            if len(native.strip()) >= max(1, len(text.strip()) * 0.7):
+                text = native
         png = png_dir / f"page_{no:03d}.png"
         pages.append({
             "page_no": no,

@@ -1,199 +1,209 @@
-"""离线协议/路由回归；模型判断被替身控制，不代表真实模型准确率。"""
+"""离线回归：完整意图、关键对象、有限等待、缓存和最终Top K。"""
+import asyncio
 import copy
 import json
 import os
 import sys
 from unittest.mock import Mock
-
 import pytest
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.services import intent_reranker as ir
+from app.services.search_cache import TTLCache
 from app.routers import search as route
 
-QUERY = "找一个公安打击无人机黑飞的片子"
-
+QUERY = '公安打击无人机黑飞'
+INTENT = {'actor': '公安', 'action': '打击', 'target': '无人机黑飞', 'tool': '',
+          'target_terms': [{'term': '黑飞', 'aliases': ['违规飞行']} ]}
 
 @pytest.fixture
 def candidates():
     return [
-        {"page_id": 1, "title": "无人机公安巡查", "text": "公安使用无人机识别人车和违停。", "score": 1.5},
-        {"page_id": 2, "title": "无人机飞控平台介绍", "text": "产品中心", "score": 1.3},
-        {"page_id": 3, "title": "违规飞行告警", "text": "识别黑飞目标，支持轨迹追踪和定位溯源。", "score": 0.7},
+        {'page_id': 1, 'title': '公安使用无人机', 'text': '识别人车、违停', 'score': 1.8},
+        {'page_id': 2, 'title': '无人机飞控平台介绍', 'text': '产品中心', 'score': 1.3},
+        {'page_id': 3, 'title': '违规飞行监测', 'text': '黑飞发现告警、追踪溯源', 'score': .6},
     ]
 
-
-def response():
-    return {
-        "intent": {"actor": "公安", "action": "打击黑飞", "target": "违规无人机", "purpose": "执法", "exclusions": []},
-        "results": [
-            {"id": 1, "kind": "mismatch", "score": .95, "evidence": "公安使用无人机识别人车和违停。", "reason": "无人机是工具，监管对象不同"},
-            {"id": 2, "kind": "weak", "score": .2, "evidence": "无人机飞控平台介绍", "reason": "仅标题相关，未说明黑飞治理"},
-            {"id": 3, "kind": "supporting", "score": .75, "evidence": "识别黑飞目标", "reason": "支持黑飞发现与溯源，未说明公安案例"},
-        ],
-    }
-
-
 @pytest.fixture(autouse=True)
-def no_external_services(monkeypatch):
-    monkeypatch.setattr(ir.settings, "rerank_enabled", True)
-    monkeypatch.setattr(ir.embedder, "_get_api_key", lambda: "test-key")
-    monkeypatch.setattr(ir, "_call_model", Mock(return_value=json.dumps(response(), ensure_ascii=False)))
+def isolated(monkeypatch):
+    ir._intent_cache.clear(); ir._score_cache.clear()
+    monkeypatch.setattr(ir.settings, 'rerank_enabled', True)
+    monkeypatch.setattr(ir.embedder, '_get_api_key', lambda: 'test-key')
+    calls=[]
+    async def post(path, payload, key, timeout):
+        calls.append((path,payload,timeout))
+        if 'aigc' in path:
+            return {'output': {'choices': [{'finish_reason':'stop','message':{'content':json.dumps(INTENT)}}]}}
+        return {'output': {'results': [{'index': i, 'relevance_score': s} for i,s in enumerate([.9,.7,.8])]}}
+    monkeypatch.setattr(ir,'post_json',post)
+    return calls
 
 
-def test_role_mismatch_cannot_override_full_intent_with_title_bonus(candidates):
-    before = copy.deepcopy(candidates)
-    ranked, status = ir.rerank(QUERY, candidates)
-    assert status == "applied"
-    assert [r["page_id"] for r in ranked] == [3, 1, 2]
-    assert ranked[1]["score"] == .25  # 模型给高分但判定角色错配，仍执行上限。
-    assert ranked[0]["score"] == ranked[0]["display_score"] == .75
-    assert candidates == before
-    assert ir._call_model.call_args.args[0] == QUERY
-    assert "score" not in ir._call_model.call_args.args[1][0]  # 不把旧排名分泄露为评分暗示。
+def test_missing_target_lowers_wrong_business_without_title_bonus(candidates,isolated):
+    original=copy.deepcopy(candidates)
+    result,status=ir.rerank(QUERY,candidates)
+    assert status=='applied' and [x['page_id'] for x in result]==[3,1,2]
+    assert result[0]['score']==result[0]['display_score']==.8
+    assert result[1]['score']==.225
+    assert '黑飞' in result[1]['rerank_reason']
+    assert result[0]['rerank_evidence'] is None
+    assert candidates==original
+    query=isolated[1][1]['input']['query']
+    assert QUERY in query and '作用对象：无人机黑飞' in query
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda d: d["results"].pop(),
-    lambda d: d["results"].append(d["results"][0]),
-    lambda d: d["results"][0].update(id=2),
-    lambda d: d["results"][0].update(id=999),
-    lambda d: d["results"][0].update(id=True),
-    lambda d: d["results"][0].update(score=float("nan")),
-    lambda d: d["results"][0].update(score=float("inf")),
-    lambda d: d["results"][0].update(score=True),
-    lambda d: d["results"][0].update(score=1.1),
-    lambda d: d["results"][0].update(kind="excellent"),
-    lambda d: d["results"][2].update(evidence="公安成功反制击落无人机"),
-    lambda d: d["results"][2].update(evidence=""),
-    lambda d: d["intent"].update(exclusions="无人机"),
+def test_original_negation_never_lost_in_role_summary():
+    q='公安治理黑飞，不要实际反制案例'
+    assert q in ir._query_with_roles(q,INTENT)
+    assert 'PPT页面' in ir._query_with_roles('找黑飞的片子',{})
+
+
+@pytest.mark.parametrize('mutation',[
+    lambda d:d.update(actor='公安局宣传部门'),
+    lambda d:d.update(target='无人机黑飞治理案例'),
+    lambda d:d.update(tool='PowerPoint'),
+    lambda d:d.update(target_terms=[{'term':'案例','aliases':[]}]),
+    lambda d:d.update(target_terms=[{'term':'黑飞','aliases':'低空'}]),
 ])
-def test_invalid_output_falls_back_atomically(candidates, mutation):
-    data = response()
-    mutation(data)
-    ir._call_model.return_value = json.dumps(data)
-    before = copy.deepcopy(candidates)
-    ranked, status = ir.rerank(QUERY, candidates)
-    assert status == "failed"
-    assert ranked == before == candidates
-    assert all("rerank_reason" not in r for r in candidates)
+def test_expanded_or_fabricated_intent_rejected(mutation):
+    data=copy.deepcopy(INTENT);mutation(data)
+    with pytest.raises(ValueError):ir._parse_intent(data,QUERY)
 
 
-@pytest.mark.parametrize("error", [TimeoutError(), RuntimeError(), ValueError()])
-def test_provider_failure_keeps_original_scores(candidates, error):
-    ir._call_model.side_effect = error
-    assert ir.rerank(QUERY, candidates) == (candidates, "failed")
+@pytest.mark.parametrize('rows',[
+    [],[{'index':0,'relevance_score':.8}],
+    [{'index':0,'relevance_score':.8},{'index':0,'relevance_score':.9}],
+    [{'index':True,'relevance_score':.8},{'index':1,'relevance_score':.9}],
+    [{'index':2,'relevance_score':.8},{'index':1,'relevance_score':.9}],
+    [{'index':0,'relevance_score':float('nan')},{'index':1,'relevance_score':.9}],
+    [{'index':0,'relevance_score':float('inf')},{'index':1,'relevance_score':.9}],
+    [{'index':0,'relevance_score':True},{'index':1,'relevance_score':.9}],
+    [{'index':0,'relevance_score':1.1},{'index':1,'relevance_score':.9}],
+])
+def test_incomplete_duplicate_or_invalid_scores_rejected(rows):
+    with pytest.raises(ValueError):ir._parse_scores({'output':{'results':rows}},2)
 
 
-def test_disabled_missing_key_and_empty_skip_model(candidates, monkeypatch):
-    monkeypatch.setattr(ir.settings, "rerank_enabled", False)
-    assert ir.rerank(QUERY, candidates)[1] == "disabled"
-    monkeypatch.setattr(ir.settings, "rerank_enabled", True)
-    monkeypatch.setattr(ir.embedder, "_get_api_key", lambda: "")
-    assert ir.rerank(QUERY, candidates)[1] == "unavailable"
-    assert ir.rerank(QUERY, [])[1] == "skipped"
-    ir._call_model.assert_not_called()
+def test_out_of_order_provider_results_map_by_index():
+    data={'results':[{'index':1,'relevance_score':.9},{'index':0,'relevance_score':.1}]}
+    assert ir._parse_scores(data,2)=={0:.1,1:.9}
 
 
-def test_candidate_budget_preserves_both_recall_orders():
-    vectors = [{"page_id": i} for i in range(150)]
-    hybrid = list(reversed(vectors))
-    chosen = route._rerank_candidates(vectors, hybrid, 60)
-    ids = [r["page_id"] for r in chosen]
-    assert len(ids) == len(set(ids)) == 60
-    assert set(range(30)).issubset(ids)
-    assert set(range(120, 150)).issubset(ids)
+def test_cache_hits_and_content_changes_invalidate(candidates,isolated):
+    one,_=ir.rerank(QUERY,candidates)
+    assert len(isolated)==2
+    two,_=ir.rerank(QUERY,candidates)
+    assert one==two and len(isolated)==2
+    candidates[0]['text']='具备黑飞发现与告警能力'
+    three,_=ir.rerank(QUERY,candidates)
+    assert len(isolated)==3 and three[0]['page_id']==1
+    candidates[0]['file_name']='修改后的文件名'
+    four,_=ir.rerank(QUERY,candidates)
+    assert len(isolated)==3 and four[0]['file_name']=='修改后的文件名'
 
 
-def setup_route(monkeypatch, candidates):
-    for item in candidates:
-        item.update(file_id=1, file_name="测试素材", page_no=item["page_id"], tags="", category="")
-    monkeypatch.setattr(route.embedder, "has_api_key", lambda: True)
-    monkeypatch.setattr(route.embedder, "embed_query", lambda q: [0.1])
-    monkeypatch.setattr(route, "analyze_query_full", lambda q: ({"无人机": {"w": 1, "s": ["无人机"]}}, []))
-    monkeypatch.setattr(route, "_vector_search", Mock(return_value=candidates))
-    monkeypatch.setattr(route, "_fulltext_search", Mock(return_value=candidates))
+def test_key_rotation_invalidates_cache(candidates,isolated,monkeypatch):
+    ir.rerank(QUERY,candidates)
+    monkeypatch.setattr(ir.embedder,'_get_api_key',lambda:'rotated-key')
+    ir.rerank(QUERY,candidates)
+    assert len(isolated)==4
 
 
-def test_route_reranks_before_top_k_and_keeps_scores_consistent(monkeypatch, candidates):
-    setup_route(monkeypatch, candidates)
-    result = route.search({"query": QUERY, "top_k": 1}, _="admin", db=Mock())
-    assert result.rerank_status == "applied"
-    assert result.total == 1
-    assert result.items[0].page_id == 3  # 原来第3位，不能先截到top1再重排。
-    assert result.items[0].display_score == result.items[0].score == .75
-    assert result.items[0].rerank_evidence == "识别黑飞目标"
+def test_deadline_cancels_pending_call_without_retries(candidates,monkeypatch):
+    cancelled=[];calls=[]
+    async def hung(*a):
+        calls.append(1)
+        try: await asyncio.sleep(20)
+        finally: cancelled.append(True)
+    monkeypatch.setattr(ir,'post_json',hung)
+    monkeypatch.setattr(ir.settings,'rerank_timeout_seconds',.02)
+    result,status=ir.rerank(QUERY,candidates)
+    assert status=='failed' and result==candidates
+    assert cancelled==[True] and len(calls)==1
 
 
-def test_original_negation_reaches_model_without_lexical_penalty(monkeypatch, candidates):
-    setup_route(monkeypatch, candidates)
-    query = "找黑飞监测，不要无人机巡逻"
-    monkeypatch.setattr(route, "analyze_query_full", lambda q: ({}, ["无人机", "黑飞"]))
-    result = route.search({"query": query}, _="admin", db=Mock())
-    assert ir._call_model.call_args.args[0] == query
-    assert result.items[0].score == .75  # 不能再用泛化排除词削弱正确业务关系。
+def test_bad_role_output_still_ranks_original_query(candidates,monkeypatch,isolated):
+    async def bad(*a):raise ValueError('invalid role')
+    monkeypatch.setattr(ir,'_understand',bad)
+    result,status=ir.rerank(QUERY,candidates)
+    assert status=='applied'
+    assert QUERY in isolated[0][1]['input']['query']
 
 
-def test_route_failed_rerank_preserves_legacy_order(monkeypatch, candidates):
-    setup_route(monkeypatch, candidates)
-    ir._call_model.side_effect = TimeoutError()
-    result = route.search({"query": QUERY}, _="admin", db=Mock())
-    assert result.rerank_status == "failed"
-    assert [r.page_id for r in result.items] == [1, 2, 3]
-    assert all(r.rerank_reason is None for r in result.items)
-    assert result.items[0].display_score == route._score_to_display(result.items[0].score)
+def test_model_failure_restores_all_original_scores(candidates,monkeypatch):
+    async def failure(*a):raise RuntimeError('offline')
+    monkeypatch.setattr(ir,'post_json',failure)
+    result,status=ir.rerank(QUERY,candidates)
+    assert status=='failed' and result==candidates
+    assert all('rerank_reason' not in x for x in candidates)
 
 
-def test_fulltext_fallback_can_still_rerank(monkeypatch, candidates):
-    setup_route(monkeypatch, candidates)
-    monkeypatch.setattr(route.embedder, "embed_query", Mock(side_effect=route.embedder.EmbeddingError("test")))
-    result = route.search({"query": QUERY, "top_k": 1}, _="admin", db=Mock())
-    assert result.rerank_status == "applied"
-    assert result.items[0].page_id == 3
-    assert result.items[0].embedding_status == "n/a"
-    assert route._fulltext_search.call_args.args[-1] == 60
+def test_skip_disabled_empty_and_no_key(candidates,isolated,monkeypatch):
+    monkeypatch.setattr(ir.settings,'rerank_enabled',False)
+    assert ir.rerank(QUERY,candidates)[1]=='disabled'
+    monkeypatch.setattr(ir.settings,'rerank_enabled',True)
+    assert ir.rerank(QUERY,[])[1]=='skipped'
+    monkeypatch.setattr(ir.embedder,'_get_api_key',lambda:'')
+    assert ir.rerank(QUERY,candidates)[1]=='unavailable'
+    assert isolated==[]
 
 
-def test_text_is_bounded_but_keeps_tail():
-    clipped = ir._clip_text("开头" + "中" * 3000 + "末尾黑飞告警", 1800)
-    assert clipped.startswith("开头") and clipped.endswith("末尾黑飞告警")
-    assert len(clipped) < 1850
+def test_noise_is_normalized_without_character_bag_matching():
+    parsed=ir._parse_intent(INTENT,QUERY)
+    assert ir._target_coverage({'title':'','text':'违\nf070规\n飞行'},parsed)[0]==['黑飞']
+    assert ir._target_coverage({'title':'','text':'违\n\uf070规\n飞行'},parsed)[0]==[]
+    assert ir._target_coverage({'title':'','text':'飞行黑名单'},parsed)[0]==['黑飞']
 
 
-def test_keyword_candidates_still_require_category_and_file():
-    db = Mock()
-    db.execute.return_value.mappings.return_value.all.return_value = []
-    route._fulltext_search(db, "无人机", "安防", 123, 60)
-    statement = db.execute.call_args.args[0]
-    sql = str(statement)
-    assert ") AND f.category = :category AND p.file_id = :file_id" in sql
-    params = statement.compile().params
-    assert params["category"] == "安防" and params["file_id"] == 123
+def test_cache_bounded_and_returns_copies(monkeypatch):
+    import app.services.search_cache as mod
+    now=[0];monkeypatch.setattr(mod.time,'monotonic',lambda:now[0])
+    cache=TTLCache(capacity=2,ttl=1)
+    cache.put('a',[1]);copy=cache.get('a');copy.append(2)
+    assert cache.get('a')==[1]
+    cache.put('b',[2]);cache.put('c',[3]);assert cache.get('a') is None
+    now[0]=2;assert cache.get('c') is None
 
 
-def test_no_key_route_preserves_keyword_search(monkeypatch, candidates):
-    setup_route(monkeypatch, candidates)
-    monkeypatch.setattr(ir.embedder, "_get_api_key", lambda: "")
-    monkeypatch.setattr(route.embedder, "has_api_key", lambda: False)
-    result = route.search({"query": QUERY, "top_k": 1}, _="admin", db=Mock())
-    assert result.rerank_status == "unavailable"
-    assert result.items[0].page_id == 1
-    ir._call_model.assert_not_called()
-    route._vector_search.assert_not_called()
+def setup_route(monkeypatch,candidates):
+    for x in candidates:x.update(file_id=1,file_name='测试',page_no=x['page_id'],tags='',category='')
+    monkeypatch.setattr(route.embedder,'has_api_key',lambda:True)
+    monkeypatch.setattr(route.embedder,'embed_query',lambda q:[.1])
+    monkeypatch.setattr(route,'_vector_search',Mock(return_value=candidates))
+    monkeypatch.setattr(route,'_fulltext_search',Mock(return_value=candidates))
 
 
-def test_empty_recall_does_not_call_model(monkeypatch):
-    setup_route(monkeypatch, [])
-    result = route.search({"query": QUERY}, _="admin", db=Mock())
-    assert result.total == 0 and result.rerank_status == "skipped"
-    ir._call_model.assert_not_called()
+def test_route_reranks_before_top_k(monkeypatch,candidates):
+    setup_route(monkeypatch,candidates)
+    result=route.search({'query':QUERY,'top_k':1},_='admin',db=Mock())
+    assert result.total==1 and result.items[0].page_id==3
+    assert result.rerank_status=='applied'
+    assert result.items[0].score==result.items[0].display_score
+    assert result.timings_ms['total']>=0
 
 
-@pytest.mark.parametrize("top_k,expected", [(-5, 1), (1, 1), (500, 50)])
-def test_top_k_is_bounded(monkeypatch, top_k, expected):
-    candidates = [{"page_id": i, "score": .5, "title": "", "text": ""} for i in range(60)]
-    setup_route(monkeypatch, candidates)
-    monkeypatch.setattr(ir.settings, "rerank_enabled", False)
-    result = route.search({"query": QUERY, "top_k": top_k}, _="admin", db=Mock())
-    assert result.total == expected and result.rerank_status == "disabled"
-    ir._call_model.assert_not_called()
+def test_disabled_route_keeps_legacy_fallback(monkeypatch,candidates):
+    setup_route(monkeypatch,candidates)
+    monkeypatch.setattr(ir.settings,'rerank_enabled',False)
+    result=route.search({'query':QUERY},_='admin',db=Mock())
+    assert result.rerank_status=='disabled' and result.items[0].page_id==1
+    assert result.items[0].display_score==route._score_to_display(result.items[0].score)
+
+
+def test_vector_failure_can_still_rerank_keyword_candidates(monkeypatch,candidates):
+    setup_route(monkeypatch,candidates)
+    monkeypatch.setattr(route.embedder,'embed_query',Mock(side_effect=route.embedder.EmbeddingError('test')))
+    result=route.search({'query':QUERY,'top_k':1},_='admin',db=Mock())
+    assert result.items[0].page_id==3 and result.items[0].embedding_status=='n/a'
+
+
+def test_keyword_filters_are_mandatory():
+    db=Mock();db.execute.return_value.mappings.return_value.all.return_value=[]
+    route._fulltext_search(db,'无人机','安防',123,60)
+    assert ') AND f.category = :category AND p.file_id = :file_id' in str(db.execute.call_args.args[0])
+
+
+def test_candidate_budget_preserves_vector_and_keyword_orders():
+    rows=[{'page_id':i} for i in range(150)]
+    chosen=route._rerank_candidates(rows,list(reversed(rows)),60)
+    ids={x['page_id'] for x in chosen}
+    assert len(ids)==60 and set(range(30)).issubset(ids) and set(range(120,150)).issubset(ids)

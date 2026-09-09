@@ -5,6 +5,7 @@
 """
 import logging
 import re
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text as sa_text
@@ -26,7 +27,7 @@ from ..database import get_db
 from ..schemas import SearchResponse, SearchResultItem
 from ..services import embedder
 from ..services.intent_reranker import rerank
-from ..services.query_analyzer import analyze_query, analyze_query_full
+from ..services.query_analyzer import analyze_query, _rule_exclude
 
 logger = logging.getLogger("ppt.search")
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -316,6 +317,9 @@ def search(
     query = (body.get("query") or "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="查询内容不能为空")
+    if len(query) > 1000:
+        raise HTTPException(status_code=400, detail="查询内容请控制在1000字以内")
+    started = time.monotonic()
     category = (body.get("category") or "").strip()
     file_id = int(body.get("file_id") or 0)
     limit = max(1, min(int(body.get("top_k") or settings.search_top_k), 50))
@@ -325,10 +329,11 @@ def search(
     has_key = embedder.has_api_key()
     candidate_limit = settings.rerank_candidate_limit
     fulltext_limit = candidate_limit if has_key and settings.rerank_enabled else limit
+    # 候选选择只需本地词项；完整关系由后续重排判断，不再先串行生成同义词列表。
+    weights = {word: {"w": 1.0, "s": [word]} for word in _split_words(query)}
+    exclude = _rule_exclude(query)
     if has_key:
         try:
-            # 完整查询理解：正向关键词 + 排除词
-            weights, exclude = analyze_query_full(query)
             # 剥离否定从句后用正向意图编码向量（避免排除概念把目标页拉高）
             positive_q = _strip_negative_clause(query)
             qvec = embedder.embed_query(positive_q)
@@ -342,15 +347,16 @@ def search(
             mode = "fulltext"
             items = _fulltext_search(db, query, category, file_id, fulltext_limit)
             fallback_items = items[:limit]
-            _, exclude = analyze_query_full(query)
     else:
         mode = "fulltext"
         items = _fulltext_search(db, query, category, file_id, limit)
         fallback_items = items[:limit]
-        _, exclude = analyze_query_full(query)
 
     # 必须使用原始完整问题；重排成功后不叠加关键词/排除词分，避免再次丢失业务关系。
+    recall_ms = round((time.monotonic() - started) * 1000)
+    rerank_started = time.monotonic()
     items, rerank_status = rerank(query, items)
+    rerank_ms = round((time.monotonic() - rerank_started) * 1000)
     if rerank_status == "applied":
         items = items[:limit]
     else:
@@ -371,4 +377,7 @@ def search(
         )
         for r in items
     ]
-    return SearchResponse(query=query, total=len(results), items=results, rerank_status=rerank_status)
+    timings = {"recall": recall_ms, "rerank": rerank_ms, "total": round((time.monotonic() - started) * 1000)}
+    logger.info("search timing: %s status=%s results=%s", timings, rerank_status, len(results))
+    return SearchResponse(query=query, total=len(results), items=results, rerank_status=rerank_status,
+                          timings_ms=timings)

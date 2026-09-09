@@ -1,59 +1,53 @@
-"""使用真实 DashScope SDK 构造/解析消息，仅替换 HTTP 传输；不调用外部模型。"""
+"""真实HTTP客户端配合内存传输，确认请求格式、认证、错误和取消。"""
+import asyncio
 import json
 import os
 import sys
-
 import pytest
-import requests
-
+import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.services import model_client as client
 from app.services import intent_reranker as ir
 
 
-@pytest.mark.parametrize("status,finish,timeout,expected", [
-    (200, "stop", False, "applied"),
-    (200, "length", False, "failed"),
-    (429, "stop", False, "failed"),
-    (200, "stop", True, "failed"),
-])
-def test_sdk_wire_contract(monkeypatch, status, finish, timeout, expected):
-    observed = []
-    content = {
-        "intent": {"actor": "", "action": "发现", "target": "违规无人机", "purpose": "", "exclusions": []},
-        "results": [{"id": 1, "kind": "direct", "score": .9, "reason": "直接支持黑飞发现", "evidence": "黑飞发现告警"}],
-    }
+def test_native_request_contract(monkeypatch):
+    calls=[]
+    async def post(path,payload,key,timeout):
+        calls.append((path,payload,key))
+        return {'output':{'results':[{'index':0,'relevance_score':.8}]}}
+    async def roles(*a):return ir._parse_intent({'actor':'公安','action':'打击','target':'黑飞','tool':'','target_terms':[]},'公安打击黑飞')
+    monkeypatch.setattr(ir,'post_json',post);monkeypatch.setattr(ir,'_understand',roles)
+    monkeypatch.setattr(ir.settings,'rerank_model','qwen3.7-text-rerank')
+    out=asyncio.run(ir._rank('公安打击黑飞',[{'id':9,'title':'黑飞','text':'识别告警'}],'test-key'))
+    path,payload,key=calls[0]
+    assert path=='/api/v1/services/rerank/text-rerank/text-rerank'
+    assert key=='test-key' and payload['parameters']['top_n']==1
+    assert '业务动作：打击' in payload['input']['query']
+    assert payload['input']['documents']==['黑飞\n识别告警']
+    assert out[9]['score']==.8
 
-    def send(session, request, **kwargs):
-        observed.append((request, kwargs))
-        if timeout:
-            raise requests.exceptions.ReadTimeout("simulated")
-        response = requests.Response()
-        response.status_code = status
-        response.headers["Content-Type"] = "application/json"
-        response._content = json.dumps({
-            "request_id": "test", "code": "Throttling" if status == 429 else "",
-            "message": "test", "usage": {},
-            "output": {"choices": [{"finish_reason": finish, "message": {
-                "role": "assistant", "content": json.dumps(content, ensure_ascii=False),
-            }}]},
-        }).encode()
-        return response
 
-    monkeypatch.setattr(requests.sessions.Session, "send", send)
-    monkeypatch.setattr(ir.settings, "rerank_enabled", True)
-    monkeypatch.setattr(ir.embedder, "_get_api_key", lambda: "test-key")
-    items = [{"page_id": 1, "title": "黑飞发现告警", "text": "", "score": .3}]
-    ranked, state = ir.rerank("找黑飞发现告警内容", items)
-    assert state == expected
-    assert len(observed) == 1
-    request, kwargs = observed[0]
-    assert kwargs["timeout"] == ir.settings.rerank_timeout_seconds
-    body = json.loads(request.body)
-    assert body["model"] == ir.settings.rerank_model
-    assert body["parameters"]["enable_thinking"] is False
-    assert body["parameters"]["response_format"] == {"type": "json_object"}
-    assert "request_timeout" not in body["parameters"]
-    payload = json.loads(body["input"]["messages"][1]["content"])
-    assert payload["query"] == "找黑飞发现告警内容"
-    assert payload["candidates"][0]["id"] == 1
-    assert ranked[0]["score"] == (.9 if expected == "applied" else .3)
+@pytest.mark.parametrize('status',[200,429,503])
+def test_http_client_without_retries(monkeypatch,status):
+    calls=[];real=httpx.AsyncClient
+    def handler(request):
+        calls.append(request)
+        assert request.headers['Authorization']=='Bearer test-key'
+        assert json.loads(request.content)=={'model':'test'}
+        return httpx.Response(status,json={'ok':True})
+    monkeypatch.setattr(client.httpx,'AsyncClient',lambda **kw:real(transport=httpx.MockTransport(handler),**kw))
+    if status==200:
+        assert asyncio.run(client.post_json('/test',{'model':'test'},'test-key',1))=={'ok':True}
+    else:
+        with pytest.raises(httpx.HTTPStatusError):asyncio.run(client.post_json('/test',{'model':'test'},'test-key',1))
+    assert len(calls)==1
+
+
+def test_http_total_deadline_cancels_transport(monkeypatch):
+    closed=[];real=httpx.AsyncClient
+    async def handler(request):
+        try:await asyncio.sleep(20)
+        finally:closed.append(True)
+    monkeypatch.setattr(client.httpx,'AsyncClient',lambda **kw:real(transport=httpx.MockTransport(handler),**kw))
+    with pytest.raises(TimeoutError):asyncio.run(client.post_json('/test',{},'test-key',.02))
+    assert closed==[True]
