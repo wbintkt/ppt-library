@@ -28,10 +28,14 @@ class Settings(BaseSettings):
     # 检索
     search_top_k: int = 20
     rerank_enabled: bool = True
-    rerank_model: str = "qwen-flash"
+    rerank_model: str = "qwen3.7-text-rerank"
     rerank_candidate_limit: int = Field(default=60, ge=50, le=100)
     rerank_text_chars: int = Field(default=1800, ge=500, le=4000)
-    rerank_timeout_seconds: float = Field(default=30, ge=1, le=60)
+    rerank_timeout_seconds: float = Field(default=10, ge=1, le=60)
+    search_intent_model: str = "qwen-flash"
+    search_intent_timeout_seconds: float = Field(default=2.5, ge=0.1, le=5)
+    search_model_api_base: str = "https://dashscope.aliyuncs.com"
+    search_embedding_timeout_seconds: float = Field(default=5, ge=1, le=10)
 
     class Config:
         env_file = ".env"

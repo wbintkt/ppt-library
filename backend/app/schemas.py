@@ -81,6 +81,7 @@ class SearchResponse(BaseModel):
     total: int
     items: List[SearchResultItem]
     rerank_status: str = "unavailable"
+    timings_ms: dict[str, int] | None = None
 
 
 class TaskStatusResponse(BaseModel):

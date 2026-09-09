@@ -5,8 +5,12 @@ API Key 支持动态配置：优先读数据库 app_settings 表（界面可配�
 """
 import base64
 import time
+import hashlib
 
 from ..config import settings
+from .search_cache import TTLCache
+
+_query_cache = TTLCache(ttl=900)
 
 
 class EmbeddingError(Exception):
@@ -58,7 +62,7 @@ def _get_client():
         raise EmbeddingError("dashscope SDK 未安装")
 
 
-def _call(input_list: list, retries: int = 3) -> list:
+def _call(input_list: list, retries: int = 3, request_timeout: float | None = None) -> list:
     """调用模型，返回 embedding 列表（与 input 顺序一致）"""
     api_key = _get_api_key()
     if not api_key:
@@ -71,6 +75,7 @@ def _call(input_list: list, retries: int = 3) -> list:
                 input=input_list,
                 dimension=settings.embed_dim,
                 api_key=api_key,
+                **({"request_timeout": request_timeout} if request_timeout is not None else {}),
             )
             if resp.status_code == 200:
                 return [e["embedding"] for e in resp.output["embeddings"]]
@@ -124,5 +129,12 @@ def embed_text(text: str) -> list:
 
 
 def embed_query(text: str) -> list:
-    """用户查询 -> 向量（与页面图片同一空间）"""
-    return embed_text(text)
+    """交互查询只调用一次并缓存；批量索引保留原有重试策略。"""
+    key = hashlib.sha256(f"{settings.embed_model}|{settings.embed_dim}|{_get_api_key()}|{text}".encode()).hexdigest()
+    cached = _query_cache.get(key)
+    if cached is not None:
+        return cached
+    result = _call([{"text": text[:8000]}], retries=1,
+                   request_timeout=settings.search_embedding_timeout_seconds)[0]
+    _query_cache.put(key, result)
+    return result
