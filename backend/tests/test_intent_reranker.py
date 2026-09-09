@@ -57,6 +57,19 @@ def test_original_negation_never_lost_in_role_summary():
     assert 'PPT页面' in ir._query_with_roles('找黑飞的片子',{})
 
 
+def test_fronted_topic_or_tool_is_not_lexically_rejected():
+    data={'actor':'','action':'巡查巡逻','target':'高点摄像机','tool':'',
+          'target_terms':[{'term':'高点摄像机','aliases':[]}]}
+    parsed=ir._parse_intent(data,'高点摄像机巡查巡逻')
+    assert parsed['target_terms']==[]
+    assert ir._target_coverage({'title':'高点智能识别','text':'区域巡查'},parsed)==([],0)
+
+
+def test_clear_object_after_action_keeps_target_check():
+    parsed=ir._parse_intent(INTENT,QUERY)
+    assert parsed['target_terms'] and ir._target_coverage({'title':'无人机巡逻','text':'识别人车'},parsed)[0]==['黑飞']
+
+
 @pytest.mark.parametrize('mutation',[
     lambda d:d.update(actor='公安局宣传部门'),
     lambda d:d.update(target='无人机黑飞治理案例'),

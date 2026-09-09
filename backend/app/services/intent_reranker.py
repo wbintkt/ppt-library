@@ -67,6 +67,13 @@ def _parse_intent(data: dict, query: str) -> dict:
         ):
             raise ValueError('invalid synonyms')
         valid.append({'term': term, 'aliases': list(dict.fromkeys([term, *aliases]))})
+    # 前置主题可能是工具（“高点摄像机巡查”），不能仅凭角色模型的猜测降权。
+    # 只对原句中明确位于动作之后、且不与执行方/工具重叠的对象应用补充检查。
+    # 其他语序继续由专用模型结合完整原句判断，不做词面否决。
+    action, target = roles['action'], roles['target']
+    if (not action or not target or query.find(target) < query.find(action) + len(action)
+        or target in (roles['actor'], roles['tool'])):
+        valid = []
     return dict(roles, target_terms=valid)
 
 
