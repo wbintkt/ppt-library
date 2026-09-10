@@ -17,6 +17,8 @@ from pathlib import Path
 
 from lxml import etree
 
+from .slide_visibility import is_visible_slide
+
 NS = {
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -80,7 +82,7 @@ def _iter_rels(root):
 
 
 def _slide_order(zf: zipfile.ZipFile):
-    """显示顺序的 slide part 列表（绝对路径）"""
+    """PDF 预览顺序的可见 slide part 列表（绝对路径，跳过隐藏页）。"""
     prs = _parse(zf.read("ppt/presentation.xml"))
     rels = _parse(zf.read("ppt/_rels/presentation.xml.rels"))
     # presentation.xml.rels 位于 ppt/_rels/，Target 相对 ppt/
@@ -91,7 +93,9 @@ def _slide_order(zf: zipfile.ZipFile):
         for sld in lst:
             rid = sld.get(f"{{{NS['r']}}}id")
             if rid in rmap:
-                order.append(rmap[rid])
+                part = rmap[rid]
+                if is_visible_slide(_parse(zf.read(part.lstrip("/")))):
+                    order.append(part)
     return order
 
 
@@ -104,14 +108,28 @@ def _slide_size(zf: zipfile.ZipFile):
 # ---------- 主入口 ----------
 
 def merge_pages(sources: list[dict], out_path: str | Path):
-    """sources: [{"path": str, "pages": [1,3]}]，pages 为显示页码（按勾选顺序）"""
+    """pages 为 PDF 可见页码（从 1 开始）；sources 可交错重复同一文件。
+
+    可选 page_count 为索引时的可见页数，发现页数与预览不一致时拒绝导出。
+    """
     if not sources:
         raise MergeError("没有可合并的页面")
 
-    # 1. 解析各源文件
+    # 1. 每份文件只解析/搬迁一次，另外记录完整勾选顺序（如 A2、B1、A1）。
     parsed = []
+    source_indices = {}
+    requested = []
     for src in sources:
-        path = Path(src["path"])
+        path = Path(src["path"]).resolve()
+        if path in source_indices:
+            fi = source_indices[path]
+            if src.get("page_count") is not None and src["page_count"] != len(parsed[fi]["order"]):
+                raise MergeError(f"{path.name} 的原始页面与预览不一致，请重新解析素材后导出")
+            for page_no in src["pages"]:
+                requested.append((fi, page_no))
+                if page_no not in parsed[fi]["pages"]:
+                    parsed[fi]["pages"].append(page_no)
+            continue
         if not path.exists():
             raise MergeError(f"源文件不存在: {path.name}")
         try:
@@ -122,7 +140,13 @@ def merge_pages(sources: list[dict], out_path: str | Path):
             raise MergeError(f"无法解析 {path.name}: {e}")
         if not order:
             raise MergeError(f"无法解析 {path.name} 的页面结构")
-        parsed.append({"path": path, "order": order, "size": size, "pages": src["pages"]})
+        if src.get("page_count") is not None and src["page_count"] != len(order):
+            raise MergeError(f"{path.name} 的原始页面与预览不一致，请重新解析素材后导出")
+        fi = len(parsed)
+        source_indices[path] = fi
+        requested.extend((fi, page_no) for page_no in src["pages"])
+        parsed.append({"path": path, "order": order, "size": size,
+                       "pages": list(dict.fromkeys(src["pages"]))})
 
     # 2. 尺寸一致性（保证原始比例）
     base_size = parsed[0]["size"]
@@ -148,15 +172,14 @@ def merge_pages(sources: list[dict], out_path: str | Path):
         default=0,
     ) + 1
 
-    new_slides = []  # [(目标 slide part, 源文件索引)]
-    mapping: dict[str, str] = {}  # 源绝对 part -> 目标绝对 part（跨文件汇总）
+    selected_parts = {}  # (源文件索引, 可见页码) -> 目标 slide part
 
     for fi, src in enumerate(parsed):
         if fi == 0:
             for page_no in src["pages"]:
                 if not (1 <= page_no <= len(src["order"])):
                     raise MergeError(f"页码越界: {page_no}")
-                new_slides.append((src["order"][page_no - 1], 0))
+                selected_parts[(fi, page_no)] = src["order"][page_no - 1]
             continue
 
         with zipfile.ZipFile(src["path"]) as zf:
@@ -188,7 +211,7 @@ def merge_pages(sources: list[dict], out_path: str | Path):
                 dst_slide = f"/ppt/slides/slide{next_slide}.xml"
                 next_slide += 1
                 file_mapping[src_slide] = dst_slide
-                new_slides.append((dst_slide, fi))
+                selected_parts[(fi, page_no)] = dst_slide
 
             # 4c. 写入文件内容（二进制/XML 原样），并重写 rels
             for src_part, dst_part in file_mapping.items():
@@ -215,9 +238,8 @@ def merge_pages(sources: list[dict], out_path: str | Path):
                         rels_root, xml_declaration=True, encoding="UTF-8", standalone=True
                     )
 
-            mapping.update(file_mapping)
-
     # 5. 重建 presentation.xml + rels + Content_Types
+    new_slides = [(selected_parts[(fi, page_no)], fi) for fi, page_no in requested]
     _rebuild(parts, new_slides)
 
     # 5b. 剪除孤儿 part（未选中页的 slide/媒体等），瘦身输出包

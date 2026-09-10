@@ -11,6 +11,7 @@ from pptx.util import Emu
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.services.slide_merger import merge_pages, MergeError
+from app.services.ppt_parser import extract_native_texts
 
 # 真实原始文件（测试环境固定路径）
 ORIG1 = "/data/ppt-library/originals/ppt_000001.pptx"
@@ -139,6 +140,54 @@ def test_merge_cross_files(tmp_files, tmp_path):
             if sh.has_text_frame and sh.text_frame.text.strip():
                 texts.append(sh.text_frame.text)
     assert texts == ["A-page1", "B-page3"], texts
+
+
+@pytest.mark.parametrize("hidden_value", ["0", "false"])
+def test_export_visible_pages_matches_preview_text(tmp_path, hidden_value):
+    """首部/中间/末尾隐藏页不占预览页码，单页下载也必须取到可见页。"""
+    src = tmp_path / "hidden.pptx"
+    prs = Presentation(_mk_pptx(5, label="visible"))
+    for index in (0, 2, 4):
+        prs.slides[index]._element.set("show", hidden_value)
+    prs.save(src)
+    assert extract_native_texts(str(src)) == ["visible-page2", "visible-page4"]
+
+    for pages in ([1], [2], [2, 1]):
+        out = tmp_path / "visible.pptx"
+        merge_pages([{"path": str(src), "pages": pages, "page_count": 2}], out)
+        slides = Presentation(out).slides
+        assert [s.shapes[0].text for s in slides] == [
+            extract_native_texts(str(src))[p - 1] for p in pages
+        ]
+        assert all(s._element.get("show") not in {"0", "false"} for s in slides)
+
+    with pytest.raises(MergeError, match="页码越界"):
+        merge_pages([{"path": str(src), "pages": [3]}], tmp_path / "bad.pptx")
+    with pytest.raises(MergeError, match="预览不一致"):
+        merge_pages([{"path": str(src), "pages": [1], "page_count": 5}],
+                    tmp_path / "stale.pptx")
+
+
+def test_interleaved_sources_with_hidden_slides(tmp_path):
+    paths = []
+    for label in ("A", "B"):
+        path = tmp_path / f"{label}.pptx"
+        prs = Presentation(_mk_pptx(4, label=label))
+        prs.slides[0]._element.set("show", "0")
+        prs.slides[2]._element.set("show", "0")
+        prs.save(path)
+        paths.append(path)
+    a, b = paths
+    out = tmp_path / "interleaved.pptx"
+    merge_pages([
+        {"path": a, "pages": [2]}, {"path": b, "pages": [1]},
+        {"path": a, "pages": [1]}, {"path": b, "pages": [2]},
+    ], out)
+    assert [s.shapes[0].text for s in Presentation(out).slides] == [
+        "A-page4", "B-page2", "A-page2", "B-page4",
+    ]
+    with zipfile.ZipFile(out) as zf:
+        assert zf.testzip() is None
 
 
 def test_merge_size_mismatch_rejected(tmp_files, tmp_path):

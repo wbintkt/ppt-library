@@ -102,6 +102,7 @@ def extract_native_texts(src_path: str) -> list[str]:
         return []
     from pptx import Presentation
     from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from .slide_visibility import is_visible_slide
 
     def paragraphs(shapes):
         result = []
@@ -117,7 +118,7 @@ def extract_native_texts(src_path: str) -> list[str]:
     try:
         presentation = Presentation(src_path)
         return ["\n".join(paragraphs(slide.shapes)) for slide in presentation.slides
-                if slide._element.get("show") != "0"]
+                if is_visible_slide(slide._element)]
     except Exception:
         # 老格式、损坏文件或不支持的结构仍走 PDF 提取。
         return []

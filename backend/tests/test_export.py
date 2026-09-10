@@ -64,7 +64,7 @@ def test_export_merges_pages(auth_headers):
         assert len(slide.shapes) > 0, "每页应包含原生形状"
 
 
-def test_export_unknown_ids_skipped(auth_headers):
+def test_export_unknown_ids_rejected(auth_headers):
     pages = _seed_pages()
     if not pages:
         pytest.skip("数据库无页面数据")
@@ -73,6 +73,4 @@ def test_export_unknown_ids_skipped(auth_headers):
         json={"page_ids": [999999, pages[0].id]},
         headers=auth_headers,
     )
-    assert resp.status_code == 200, resp.text
-    prs = Presentation(io.BytesIO(resp.content))
-    assert len(prs.slides) == 1
+    assert resp.status_code == 404, resp.text
