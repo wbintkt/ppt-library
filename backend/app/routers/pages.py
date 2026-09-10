@@ -72,6 +72,9 @@ def export_pages(
         raise HTTPException(status_code=400, detail="请至少选择一页")
     if len(page_ids) > 200:
         raise HTTPException(status_code=400, detail="单次最多导出 200 页")
+    if any(type(i) is not int or i <= 0 for i in page_ids):
+        raise HTTPException(status_code=400, detail="页面编号必须为正整数")
+    page_ids = list(dict.fromkeys(page_ids))
 
     # 按传入顺序取页面（含所属文件）
     rows = (
@@ -80,23 +83,18 @@ def export_pages(
         .all()
     )
     by_id = {p.id: p for p in rows}
-    pages = [by_id[i] for i in page_ids if i in by_id]
-    if not pages:
-        raise HTTPException(status_code=404, detail="所选页面不存在")
+    if any(i not in by_id for i in page_ids):
+        raise HTTPException(status_code=404, detail="部分所选页面已不存在，请刷新后重新选择")
+    pages = [by_id[i] for i in page_ids]
 
-    # 按文件分组，保持勾选顺序
+    # 逐页传递勾选顺序；合并器负责复用同一文件的资源。
     file_map = {f.id: f for f in db.query(PPTFile).all()}
-    groups: dict[int, dict] = {}
+    sources = []
     for p in pages:
         f = file_map.get(p.file_id)
         if not f or not f.file_path or not Path(f.file_path).exists():
-            continue
-        g = groups.setdefault(p.file_id, {"path": f.file_path, "pages": []})
-        g["pages"].append(p.page_no)
-    if not groups:
-        raise HTTPException(status_code=404, detail="所选页面的原始 PPT 文件不存在")
-
-    sources = [{"path": g["path"], "pages": g["pages"]} for g in groups.values()]
+            raise HTTPException(status_code=404, detail="部分所选页面的原始 PPT 文件不存在")
+        sources.append({"path": f.file_path, "pages": [p.page_no], "page_count": f.page_count})
 
     # 原始页面抽取合并（保持样式/比例/可编辑）
     out_path = settings.data_dir / "temp" / f"export_{uuid.uuid4().hex}.pptx"
