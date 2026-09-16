@@ -15,6 +15,8 @@ from ..database import get_db
 from ..models import PPTFile, PPTPage
 from ..schemas import PageSummary, PageListResponse
 from ..services.slide_merger import merge_pages, MergeError
+from ..services.page_management import page_source
+from starlette.background import BackgroundTask
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
 
@@ -94,7 +96,7 @@ def export_pages(
         f = file_map.get(p.file_id)
         if not f or not f.file_path or not Path(f.file_path).exists():
             raise HTTPException(status_code=404, detail="部分所选页面的原始 PPT 文件不存在")
-        sources.append({"path": f.file_path, "pages": [p.page_no], "page_count": f.page_count})
+        sources.append(page_source(db,p,f))
 
     # 原始页面抽取合并（保持样式/比例/可编辑）
     out_path = settings.data_dir / "temp" / f"export_{uuid.uuid4().hex}.pptx"
@@ -103,14 +105,11 @@ def export_pages(
     except MergeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    buf = out_path.read_bytes()
-    out_path.unlink(missing_ok=True)
     filename = f"页面合集_{datetime.now():%Y%m%d_%H%M%S}.pptx"
-    return Response(
-        content=buf,
+    return FileResponse(out_path, filename=filename,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
-    )
+        background=BackgroundTask(out_path.unlink, missing_ok=True))
+
 
 
 @router.get("/{page_id}", response_model=PageSummary)

@@ -18,6 +18,9 @@ export interface SearchItem {
   embedding_status: string; category: string
 }
 export interface SearchResp { query: string; total: number; items: SearchItem[] }
+export interface ProcessingInfo { tag_status: string; duplicate_status: string; error_message: string; pending_count: number; total_pages?: number; tagged_pages?: number }
+export interface DuplicatePage { id: number; file_id: number; page_no: number; title: string; file_name: string; tags: string }
+export interface DuplicatePair { id: number; similarity: number; reason: string; new_page: DuplicatePage; old_page: DuplicatePage }
 export interface Stats { total_files: number; total_pages: number; indexed_pages: number; ready_files: number; vector_mode: boolean }
 export interface SettingsInfo {
   embed_model: string; embed_dim: number; has_api_key: boolean
@@ -59,10 +62,25 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch { /* ignore */ }
     throw new Error(detail)
   }
-  return resp.json() as Promise<T>
+  const data = await resp.json() as T
+  if (options.method && ['POST','PATCH','DELETE'].includes(options.method) && (path.startsWith('/management/') || path.startsWith('/files'))) resetSearchState()
+  return data
 }
 
 export const api = {
+  management: () => request<{files: Record<number, ProcessingInfo>}>('/management/overview'),
+  duplicates: (fileId = 0) => request<{total: number; items: DuplicatePair[]}>(`/management/duplicates?file_id=${fileId}`),
+  resolveDuplicate: (id: number, action: string) => request(`/management/duplicates/${id}/resolve`, {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action}),
+  }),
+  deletePages: (fileId: number, pageIds: number[]) => request(`/management/files/${fileId}/pages/delete`, {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({page_ids:pageIds}),
+  }),
+  appendPages: (fileId: number, file: File, selection: string) => {
+    const form = new FormData(); form.append('file',file); form.append('selection',selection)
+    return request<{pages: number}>(`/management/files/${fileId}/pages/upload`, {method:'POST',body:form})
+  },
+  retryProcessing: (fileId: number) => request(`/management/files/${fileId}/retry`, {method:'POST'}),
   login: (username: string, password: string) =>
     request<TokenResp>('/auth/login', {
       method: 'POST',

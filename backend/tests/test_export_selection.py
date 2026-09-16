@@ -33,6 +33,7 @@ def export_client(tmp_path, monkeypatch):
         pages.extend(SimpleNamespace(id=fid * 10 + n, file_id=fid, page_no=n)
                      for n in (1, 2))
     db = MagicMock()
+    db.get.return_value = None
     def query(model):
         q = MagicMock()
         if model is PPTPage:

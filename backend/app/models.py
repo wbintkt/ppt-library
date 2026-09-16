@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, BigInteger, Index, UniqueConstraint, ForeignKey,
+    Column, Integer, String, Text, DateTime, BigInteger, Index, UniqueConstraint, ForeignKey, JSON, Float,
 )
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import relationship
@@ -74,3 +74,50 @@ class PPTPage(Base):
         Index("ix_ppt_pages_text_tsv", "text_tsv", postgresql_using="gin"),
         Index("ix_ppt_pages_file_id", "file_id"),
     )
+
+
+class ManagedFile(Base):
+    """页级编辑标记；原始文件不可变，下载根据当前页面清单组装。"""
+    __tablename__ = "managed_files"
+    file_id = Column(Integer, ForeignKey("ppt_files.id", ondelete="CASCADE"), primary_key=True)
+    revision = Column(Integer, nullable=False, default=1)
+
+
+class PageSource(Base):
+    __tablename__ = "page_sources"
+    page_id = Column(Integer, ForeignKey("ppt_pages.id", ondelete="CASCADE"), primary_key=True)
+    path = Column(String(1024), nullable=False)
+    page_no = Column(Integer, nullable=False)
+    page_count = Column(Integer, nullable=False)
+
+
+class PageTag(Base):
+    __tablename__ = "page_tags"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(64), unique=True, nullable=False)
+    embedding = Column(Vector(512), nullable=True)
+
+
+class IngestRun(Base):
+    """只有新上传/追加才建检测批次，不自动扫描存量。"""
+    __tablename__ = "ingest_runs"
+    id = Column(Integer, primary_key=True)
+    file_id = Column(Integer, ForeignKey("ppt_files.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_ids = Column(JSON, nullable=False, default=list)
+    baseline_page_id = Column(Integer, nullable=False, default=0)
+    tag_status = Column(String(32), nullable=False, default="pending")
+    duplicate_status = Column(String(32), nullable=False, default="pending")
+    error_message = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DuplicatePair(Base):
+    __tablename__ = "duplicate_pairs"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("ingest_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    new_page_id = Column(Integer, ForeignKey("ppt_pages.id", ondelete="CASCADE"), nullable=False)
+    old_page_id = Column(Integer, ForeignKey("ppt_pages.id", ondelete="CASCADE"), nullable=False)
+    similarity = Column(Float, nullable=False)
+    reason = Column(String(128), nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    __table_args__ = (UniqueConstraint("new_page_id", "old_page_id", name="uq_duplicate_pair"),)

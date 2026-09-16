@@ -230,3 +230,26 @@ def test_merge_real_cross_files_size_mismatch(tmp_path):
             [{"path": ORIG1, "pages": [1]}, {"path": ORIG2, "pages": [2]}],
             out,
         )
+
+
+def test_export_retains_all_internal_relationship_targets(tmp_files,tmp_path):
+    import posixpath
+    from lxml import etree
+    a,b=tmp_files
+    out=tmp_path/'relationships.pptx'
+    merge_pages([{'path':a,'pages':[2]},{'path':b,'pages':[1]}],out)
+    with zipfile.ZipFile(out) as z:
+        names=set(z.namelist())
+        assert 'docProps/core.xml' in names
+        assert 'docProps/app.xml' in names
+        # Every selected slide, including those from other files, retains its layout relationships.
+        from app.services.slide_merger import _slide_order,_rels_name
+        for part in _slide_order(z):
+            assert _rels_name(part) in names
+        for name in names:
+            if not name.endswith('.rels'):continue
+            base=posixpath.dirname(posixpath.dirname(name))
+            for rel in etree.fromstring(z.read(name)):
+                if rel.get('TargetMode')=='External':continue
+                target=posixpath.normpath(posixpath.join('/'+base,rel.get('Target'))).lstrip('/')
+                assert target in names,(name,target)

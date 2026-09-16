@@ -13,6 +13,8 @@
 4. 合并 [Content_Types].xml（Override 按新路径、Default 按扩展名）
 """
 import zipfile
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from lxml import etree
@@ -41,6 +43,19 @@ RESOURCE_DIRS = [
 
 class MergeError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class SourcePart:
+    archive: Path
+    member: str
+
+
+def _part_data(zf, name, path):
+    # Media and embedded objects can be hundreds of MB; stream them only if retained.
+    if not name.endswith(('.xml', '.rels')):
+        return SourcePart(Path(path), name)
+    return zf.read(name)
 
 
 # ---------- 工具 ----------
@@ -163,7 +178,7 @@ def merge_pages(sources: list[dict], out_path: str | Path):
     with zipfile.ZipFile(host_path) as zf:
         for name in zf.namelist():
             if not name.endswith("/"):
-                parts["/" + name] = zf.read(name)
+                parts["/" + name] = _part_data(zf,name,host_path)
 
     # 4. 搬迁
     next_slide = max(
@@ -190,7 +205,7 @@ def merge_pages(sources: list[dict], out_path: str | Path):
             prefix = f"_f{fi}"
             for d in RESOURCE_DIRS:
                 for name in names:
-                    if not (name.startswith(f"ppt/{d}/") and not name.endswith("/")):
+                    if not (name.startswith(f"ppt/{d}/") and not name.endswith("/") and "/_rels/" not in name):
                         continue
                     src_part = "/" + name
                     fname = Path(name).name
@@ -218,7 +233,7 @@ def merge_pages(sources: list[dict], out_path: str | Path):
                 name = src_part.lstrip("/")
                 if name not in names:
                     continue
-                parts[dst_part] = zf.read(name)
+                parts[dst_part] = _part_data(zf,name,src["path"])
                 # 该 part 若有 rels，也搬 + 重写 Target
                 src_rels = _rels_name(src_part)
                 if src_rels in names:
@@ -234,7 +249,7 @@ def merge_pages(sources: list[dict], out_path: str | Path):
                         else:
                             # 引用宿主已有资源：转绝对路径
                             rel.set("Target", abs_t)
-                    parts[_rels_name(dst_part)] = etree.tostring(
+                    parts["/" + _rels_name(dst_part)] = etree.tostring(
                         rels_root, xml_declaration=True, encoding="UTF-8", standalone=True
                     )
 
@@ -252,7 +267,12 @@ def merge_pages(sources: list[dict], out_path: str | Path):
         out.unlink()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
         for part, data in sorted(parts.items()):
-            zout.writestr(part.lstrip("/"), data)
+            if isinstance(data,SourcePart):
+                with zipfile.ZipFile(data.archive) as source_zip:
+                    with source_zip.open(data.member) as src, zout.open(part.lstrip('/'),'w') as dst:
+                        shutil.copyfileobj(src,dst,1024*1024)
+            else:
+                zout.writestr(part.lstrip("/"), data)
 
 
 def _prune_orphans(parts: dict[str, bytes]):
@@ -267,7 +287,13 @@ def _prune_orphans(parts: dict[str, bytes]):
     keep = {"/[Content_Types].xml"}
     if "/docProps/thumbnail.jpeg" in parts:
         keep.add("/docProps/thumbnail.jpeg")
-    queue = ["/_rels/.rels", "/ppt/presentation.xml"]
+    queue = ["/ppt/presentation.xml"]
+    # Package relationships are rooted at /, not a normal part's _rels directory.
+    if "/_rels/.rels" in parts:
+        keep.add("/_rels/.rels")
+        for rel in _iter_rels(_parse(parts["/_rels/.rels"])):
+            if rel.get("TargetMode") != "External":
+                queue.append(_norm_part(rel.get("Target", ""), base="/"))
     while queue:
         part = queue.pop()
         if part in keep:
