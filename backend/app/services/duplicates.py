@@ -4,6 +4,9 @@ from collections import Counter
 from sqlalchemy import text as sql
 from ..models import PPTPage, DuplicatePair
 
+VECTOR_THRESHOLD = 0.95
+TEXT_OVERLAP_THRESHOLD = 0.80
+
 
 def text_overlap(a, b):
     def grams(text):
@@ -19,8 +22,8 @@ def duplicate_reason(page, other, similarity):
     if page.image_hash and page.image_hash == other['image_hash']:
         return '页面图像完全一致'
     # Same theme/template is insufficient. Require independently strong content overlap.
-    if similarity >= .975 and min(len(page.text or ''),len(other['text'] or '')) >= 40:
-        if text_overlap(page.text, other['text']) >= .90:
+    if similarity >= VECTOR_THRESHOLD and min(len(page.text or ''),len(other['text'] or '')) >= 40:
+        if text_overlap(page.text, other['text']) >= TEXT_OVERLAP_THRESHOLD:
             return '语义与正文内容均高度相似'
     return None
 
@@ -38,10 +41,10 @@ def detect(db, run):
             FROM ppt_pages
             WHERE id <= :baseline AND id != :pid
               AND (image_hash = :hash AND image_hash != '' OR
-                   embedding IS NOT NULL AND 1 - (embedding <=> CAST(:vec AS vector)) >= 0.975)
+                   embedding IS NOT NULL AND 1 - (embedding <=> CAST(:vec AS vector)) >= :vector_threshold)
             ORDER BY id
         '''), {'vec':str(list(map(float,p.embedding))), 'baseline':run.baseline_page_id,
-               'pid':p.id, 'hash':p.image_hash or ''}).mappings().all()
+               'pid':p.id, 'hash':p.image_hash or '', 'vector_threshold':VECTOR_THRESHOLD}).mappings().all()
         for other in candidates:
             reason = duplicate_reason(p, other, float(other['score']))
             if reason and not db.query(DuplicatePair).filter_by(new_page_id=p.id,old_page_id=other['id']).first():

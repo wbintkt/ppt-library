@@ -47,6 +47,17 @@ def test_duplicate_requires_image_or_both_semantic_and_text_evidence():
     assert text_overlap('','')==0
 
 
+@pytest.mark.parametrize('similarity,overlap,matched',[
+    (.95,.80,True),(.9499,.90,False),(.99,.7999,False),(.976996,.812785,True),
+])
+def test_duplicate_threshold_boundaries(monkeypatch,similarity,overlap,matched):
+    from app.services import duplicates
+    monkeypatch.setattr(duplicates,'text_overlap',lambda *args:overlap)
+    page=SimpleNamespace(image_hash='old',text='公司介绍正文'*10)
+    other={'image_hash':'new','text':'重新排版的公司介绍正文'*10}
+    assert bool(duplicate_reason(page,other,similarity)) is matched
+
+
 @pytest.mark.parametrize('method,path,body',[
     ('GET','/api/management/overview',None),
     ('GET','/api/management/duplicates',None),
