@@ -95,18 +95,18 @@ def _strip_negative_clause(query: str) -> str:
 
 
 def _hit_exclude(item: dict, exclude: list) -> bool:
-    """页面是否命中任一排除词（标题/正文/标签）"""
+    """页面是否命中任一排除词（标题/正文）"""
     if not exclude:
         return False
-    hay = f"{(item.get('title') or '')}\n{(item.get('text') or '')}\n{(item.get('tags') or '')}".lower()
+    hay = f"{(item.get('title') or '')}\n{(item.get('text') or '')}".lower()
     return any(str(e).lower() in hay for e in exclude if e)
 
 
 def _hit_exclude_count(item: dict, exclude: list) -> int:
-    """页面命中的排除词总次数（标题/正文/标签）"""
+    """页面命中的排除词总次数（标题/正文）"""
     if not exclude:
         return 0
-    hay = f"{(item.get('title') or '')}\n{(item.get('text') or '')}\n{(item.get('tags') or '')}".lower()
+    hay = f"{(item.get('title') or '')}\n{(item.get('text') or '')}".lower()
     return sum(hay.count(str(e).lower()) for e in exclude if e)
 
 
@@ -156,10 +156,9 @@ def _split_words(query: str) -> list:
     return out[:8]
 
 
-# 混合检索：关键词命中权重（标题 > 正文 > 标签）
+# 混合检索：关键词命中权重（标题 > 正文；标签不参与评分）
 _KW_TITLE = 0.45   # 标题命中一个关键词
 _KW_TEXT = 0.12    # 正文命中一个关键词
-_KW_TAG = 0.08     # 标签命中一个关键词
 _KW_CAP = 0.90     # 关键词加成上限（避免关键词淹没语义）
 
 # 非核心词（权重 < 0.8）加成折扣：次要/泛化词命中只给小幅加成，
@@ -178,7 +177,7 @@ def _word_mult(weight: float) -> float:
 
 
 def _keyword_bonus(query: str, title: str = "", text: str = "", tags: str = "", weights: dict | None = None) -> float:
-    """关键词命中加成：标题命中权重最高，正文次之，标签最低。
+    """关键词命中加成：标题命中权重最高，正文次之；标签不参与评分。
     同一关键词标题与正文都命中时叠加（标题是强信号）。
     weights 结构：{词: {"w": 权重, "s": [同义词]}}，命中同义词也算命中。
     返回 0 ~ _KW_CAP 的加成值，供混合排序使用。
@@ -190,7 +189,6 @@ def _keyword_bonus(query: str, title: str = "", text: str = "", tags: str = "", 
         weights = {w: {"w": 1.0, "s": [w]} for w in words}
     title_l = (title or "").lower()
     text_l = (text or "").lower()
-    tags_l = (tags or "").lower()
     bonus = 0.0
     for w, info in weights.items():
         if isinstance(info, dict):
@@ -202,15 +200,12 @@ def _keyword_bonus(query: str, title: str = "", text: str = "", tags: str = "", 
         mult = _word_mult(weight)
         hit_title = any(s.lower() in title_l for s in syns)
         hit_text = any(s.lower() in text_l for s in syns)
-        hit_tag = any(s.lower() in tags_l for s in syns)
         if hit_title:
             bonus += _KW_TITLE * mult
         if hit_text and not hit_title:
             bonus += _KW_TEXT * mult
         elif hit_text and hit_title:
             bonus += _KW_TEXT * 0.5 * mult  # 标题+正文都命中：正文按半权重叠加
-        if hit_tag and not hit_title:
-            bonus += _KW_TAG * mult
     return min(bonus, _KW_CAP)
 
 
@@ -241,7 +236,7 @@ def _fulltext_search(db: Session, query: str, category: str, file_id: int, limit
     for i, w in enumerate(words):
         p = f"w{i}"
         params[p] = f"%{w}%"
-        where.append(f"(p.title ILIKE :{p} OR p.text ILIKE :{p} OR p.tags ILIKE :{p})")
+        where.append(f"(p.title ILIKE :{p} OR p.text ILIKE :{p})")
         score_parts.append(f"CASE WHEN p.title ILIKE :{p} THEN 3.0 ELSE 0 END + CASE WHEN p.text ILIKE :{p} THEN 1.0 ELSE 0 END")
     if category:
         filters.append("f.category = :category")

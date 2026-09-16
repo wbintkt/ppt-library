@@ -2,6 +2,7 @@
 import shutil
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
@@ -11,10 +12,12 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user
 from ..config import settings
 from ..database import get_db
-from ..models import PPTFile, PPTPage
+from ..models import PPTFile, PPTPage, ManagedFile, IngestRun
 from ..schemas import FileSummary, FileListResponse, FileUpdateRequest
 from ..services import hashing
 from ..tasks import parse_ppt_task, embed_pages_task
+from ..services.page_management import new_run, locked_file
+from .pages import export_pages
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -45,6 +48,10 @@ def upload_file(
             if not chunk:
                 break
             size += len(chunk)
+            if size > settings.max_upload_mb * 1024 * 1024:
+                out.close()
+                tmp_path.unlink(missing_ok=True)
+                raise HTTPException(413, f"文件不能超过 {settings.max_upload_mb} MB")
             out.write(chunk)
     if size == 0:
         tmp_path.unlink(missing_ok=True)
@@ -55,7 +62,6 @@ def upload_file(
     dup = db.query(PPTFile).filter(PPTFile.file_hash == file_hash).first()
     if dup:
         tmp_path.unlink(missing_ok=True)
-        dup.status = "ready" if dup.page_count else dup.status
         return FileSummary.model_validate(dup)
 
     # 建记录
@@ -83,8 +89,16 @@ def upload_file(
     rec.file_path = str(final_path)
     db.commit()
 
-    # 派发解析任务
-    parse_ppt_task.delay(rec.id)
+    run = new_run(db, rec.id)
+    db.commit()
+    # Only new uploads create a duplicate-detection run.
+    try:
+        parse_ppt_task.delay(rec.id, run.id)
+    except Exception:
+        rec.status = "failed"
+        rec.error_message = "任务队列暂不可用，请重新索引"
+        db.commit()
+        raise HTTPException(503,rec.error_message)
     return FileSummary.model_validate(rec)
 
 
@@ -154,9 +168,7 @@ def update_file(
 
 @router.delete("/{file_id}")
 def delete_file(file_id: int, _: str = Depends(get_current_user), db: Session = Depends(get_db)):
-    rec = db.query(PPTFile).get(file_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail="文件不存在")
+    rec = locked_file(db,file_id)
     # 删页面记录 + 向量
     db.query(PPTPage).filter_by(file_id=file_id).delete()
     # 删文件与页面目录
@@ -164,6 +176,7 @@ def delete_file(file_id: int, _: str = Depends(get_current_user), db: Session = 
         Path(rec.file_path).unlink(missing_ok=True)
         pages_dir = settings.data_dir / "pages" / f"ppt_{file_id:06d}"
         shutil.rmtree(pages_dir, ignore_errors=True)
+        shutil.rmtree(settings.data_dir / "assets" / f"ppt_{file_id:06d}", ignore_errors=True)
     except OSError:
         pass
     db.delete(rec)
@@ -176,6 +189,14 @@ def download_file(file_id: int, _: str = Depends(get_current_user), db: Session 
     rec = db.query(PPTFile).get(file_id)
     if not rec or not Path(rec.file_path).exists():
         raise HTTPException(status_code=404, detail="文件不存在")
+    if db.get(ManagedFile,file_id):
+        ids = [p.id for p in db.query(PPTPage).filter_by(file_id=file_id).order_by(PPTPage.page_no).all()]
+        if not ids:
+            raise HTTPException(400,"当前文件没有可下载页面，请先追加页面")
+        response = export_pages({"page_ids":ids}, _, db)
+        filename = str(Path(rec.name).with_suffix(".pptx"))
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename)}"
+        return response
     return FileResponse(
         rec.file_path,
         filename=rec.name,
@@ -189,10 +210,21 @@ def reindex_file(file_id: int, _: str = Depends(get_current_user), db: Session =
     rec = db.query(PPTFile).get(file_id)
     if not rec:
         raise HTTPException(status_code=404, detail="文件不存在")
+    rec = locked_file(db,file_id)
+    if db.get(ManagedFile,file_id):
+        from .management import retry
+        return retry(file_id,_,db)
     db.query(PPTPage).filter_by(file_id=file_id).update({"embedding_status": "pending"})
     rec.status = "parsing"
     rec.progress = 1
     rec.error_message = ""
     db.commit()
-    parse_ppt_task.delay(file_id)
+    run = db.query(IngestRun).filter_by(file_id=file_id).order_by(IngestRun.id.desc()).first()
+    try:
+        parse_ppt_task.delay(file_id, run.id if run else None)
+    except Exception:
+        rec.status = "failed"
+        rec.error_message = "任务队列暂不可用，请稍后重试"
+        db.commit()
+        raise HTTPException(503, rec.error_message)
     return {"ok": True, "message": "已重新加入解析队列"}

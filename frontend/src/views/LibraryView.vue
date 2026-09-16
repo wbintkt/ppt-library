@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type FileSummary } from '../api'
+import { api, type ProcessingInfo, type FileSummary } from '../api'
 import { toast } from '../toast'
 import UploadModal from '../components/UploadModal.vue'
+import DuplicateReview from '../components/DuplicateReview.vue'
 
 const router = useRouter()
 const files = ref<FileSummary[]>([])
@@ -15,9 +16,12 @@ const page = ref(1)
 const pageSize = 30
 const loading = ref(false)
 const showUpload = ref(false)
+const overview=ref<Record<number,ProcessingInfo>>({})
+const showDuplicates=ref(false),revision=ref(0)
+const pendingCount=computed(()=>Object.values(overview.value).reduce((n,s)=>n+s.pending_count,0))
 let timer: ReturnType<typeof setInterval> | null = null
 
-const processing = computed(() => files.value.filter(f => f.status === 'parsing' || f.status === 'embedding'))
+const processing = computed(() => files.value.filter(f => ['parsing','embedding','appending','enriching'].includes(f.status)))
 
 async function load() {
   loading.value = true
@@ -28,6 +32,12 @@ async function load() {
     const resp = await api.listFiles(params)
     files.value = resp.items
     total.value = resp.total
+    const next=(await api.management()).files
+    for(const [id,info] of Object.entries(next)){
+      if(info.pending_count>(overview.value[Number(id)]?.pending_count||0) && overview.value[Number(id)]) toast(`发现 ${info.pending_count} 组相似页面，可在相似检测中处理`)
+    }
+    overview.value=next
+    revision.value++
   } catch (e: any) {
     toast(e.message || '加载失败', 'error')
   } finally {
@@ -45,7 +55,7 @@ async function loadCategories() {
 }
 
 function statusLabel(s: string) {
-  return { ready: '已完成', ready_limited: '可检索*', parsing: '解析中', embedding: '向量化中', failed: '失败' }[s] || s
+  return { ready: '已完成', ready_limited: '可检索*', parsing: '解析中', embedding: '向量化中', failed: '失败', appending:'追加页面中', enriching:'生成标签 / 相似检测' }[s] || s
 }
 
 async function remove(f: FileSummary) {
@@ -94,9 +104,10 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <h2 class="lib-title">素材库</h2>
         <p class="lib-sub">共 {{ total }} 个 PPT · {{ processing.length ? `${processing.length} 个正在处理` : '全部就绪' }}</p>
       </div>
-      <button class="btn primary" @click="showUpload = true">＋ 上传 PPT</button>
+      <div class="lib-head-actions"><button class="btn" :class="{primary:pendingCount>0}" @click="showDuplicates=!showDuplicates">相似检测{{pendingCount?` · ${pendingCount} 组`:''}}</button><button class="btn primary" @click="showUpload = true">＋ 上传 PPT</button></div>
     </div>
 
+    <DuplicateReview v-if="showDuplicates" :revision="revision" @changed="load"/>
     <div class="lib-filters fade-up fade-up-1">
       <div class="cats">
         <button class="chip" :class="{ active: category === '' }" @click="category = ''; page = 1; load()">全部</button>
@@ -120,6 +131,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
           <div class="file-top">
             <span class="file-name">{{ f.name }}</span>
             <span class="badge" :class="f.status">{{ statusLabel(f.status) }}</span>
+            <span v-if="overview[f.id]?.pending_count" class="duplicate-count">{{overview[f.id].pending_count}} 组相似页</span>
           </div>
           <div class="file-meta">
             <span class="tag">{{ f.category }}</span>
@@ -128,7 +140,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
             <span class="file-detail" v-if="f.source">· {{ f.source }}</span>
             <span class="file-detail">· {{ fmtTime(f.upload_time) }}</span>
           </div>
-          <div class="progress-line" v-if="f.status === 'parsing' || f.status === 'embedding'">
+          <div class="progress-line" v-if="['parsing','embedding','appending','enriching'].includes(f.status)">
             <div class="bar"><div class="bar-inner" :style="{ width: f.progress + '%' }"></div></div>
             <span class="bar-text">{{ f.progress }}%</span>
           </div>
@@ -138,8 +150,8 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <div class="file-actions" @click.stop>
           <button class="btn btn-sm" @click="router.push(`/file/${f.id}`)">浏览页面</button>
           <a class="btn btn-sm" :href="api.downloadUrl(f.id)">下载</a>
-          <button class="btn btn-sm" @click="reindex(f)">重索引</button>
-          <button class="btn btn-sm danger" @click="remove(f)">删除</button>
+          <button class="btn btn-sm" :disabled="processing.some(p=>p.id===f.id)" @click="reindex(f)">重索引</button>
+          <button class="btn btn-sm danger" :disabled="processing.some(p=>p.id===f.id)" @click="remove(f)">删除</button>
         </div>
       </div>
     </div>
@@ -208,4 +220,5 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 .btn.danger:hover { border-color: var(--danger); background: var(--danger); color: #fff; }
 .pager { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 36px; }
 .page-info { font-size: 13px; color: var(--ink-soft); }
+.lib-head-actions{display:flex;gap:12px;flex-wrap:wrap}.duplicate-count{font-size:11px;color:var(--brand);white-space:nowrap}@media(max-width:650px){.lib-head{align-items:stretch;flex-direction:column;gap:18px}}
 </style>
